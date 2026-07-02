@@ -9,7 +9,9 @@ The aim of this program is to get from a raw photo of an encrypted manuscript, i
 
 ## 1. Input
 
-- **Ciphered document (.jpg)**
+- **Ciphered document (.jpg)** 
+
+  DECODE Records Database from DE-CRYPT Project
 
 ## 2. Preprocessing
 
@@ -25,7 +27,7 @@ The aim of this program is to get from a raw photo of an encrypted manuscript, i
 
 5. **Linear Noise Filtering**
 
-   
+   => Process extracted from https://dspace.ut.ee/server/api/core/bitstreams/e8c1cae6-cc96-43e8-993b-0f4f29f5312d/content
 
 ### 2.2 Data Preprocessing
 
@@ -57,6 +59,11 @@ Outputs of preprocessing feed into two vector types:
   - Character size variance
   - Characters per pool
 
+  These features were definded from expert knowledge represented into this ontology like representation: 
+
+<img src="./schema_ontologie_systeme_chiffrement.png" alt="shema_ontology_cipher_type"/>
+  
+
 - **Vector Image**
 
   Made from:
@@ -69,19 +76,23 @@ Outputs of preprocessing feed into two vector types:
 
 ### Fusion
 
+=> Flatten Layer
+
 - **TIP or MMCL — MERGE** (combine image vector and tabular vector)
 
-=> Flatten Layer
+  (arXiv:2407.07582v1 [cs.CV] 10 Jul 2024)
 
 ### Processing
 
-**FeedForward Neural Network**
-
-- Activation function: **ReLU or Tanh**
+**Reccurent Neural Network**
 
 => Hidden Layer
 
+- Activation function: **ReLU or Tanh**
+
 ### Finalization
+
+=> Output layer
 
 - Activation function: **SoftMax**
 
@@ -89,7 +100,7 @@ Outputs of preprocessing feed into two vector types:
 
 - Backpropagation function / Optimization: **Adam**
 
-  => Output layer
+- Evaluation metric: **Precision**
 
 ------
 
@@ -101,24 +112,15 @@ Outputs of preprocessing feed into two vector types:
 - Transposition
 - Code book
 - Polyalphabetic
-- Simple / Monoalphabetic
+- Simple Monoalphabetic
 
 Each class outputs a **Probability P**.
 
+Finally, multiple classes prediction could be taken into account. Experts will define a threshold to decide which predictions are acceptable or not .
+
 ------
 
-## Legend Recap (Classes)
 
-```
-Output: Cipher Type
-├── Not encrypted
-├── Machine
-├── Homophonic
-├── Transposition
-├── Code book
-├── Polyalphabetic
-└── Simple / Monoalphabetic
-```
 
 <img src="./shema_architecture_cipherTypeFinder.png" alt="shema_architecture_cipherTypeFinder" style="zoom:200%;" />
 
