@@ -120,7 +120,7 @@ Output: Cipher Type
 └── Simple / Monoalphabetic
 ```
 
-<img src="/home/mae/Documents/idmc/master1/internship/caramba/shema_architecture_cipherTypeFinder.png" alt="shema_architecture_cipherTypeFinder" style="zoom:200%;" />shema_architecture_cipherTypeFinder
+<img src="./shema_architecture_cipherTypeFinder.png" alt="shema_architecture_cipherTypeFinder" style="zoom:200%;" />
 
 
 
