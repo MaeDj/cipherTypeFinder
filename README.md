@@ -3,7 +3,7 @@ June 2026
 
 Program created for Caramba Team, Loria.
 
-The aim of this program is to get from a raw photo of an encrypted manuscript, it's cipher type included into these 6 categories: 
+The aim of this program is to get from a raw photo of an encrypted manuscript, it's cipher type included into 6 categories
 
 # Cipher Type Finder — Architecture Schema
 
