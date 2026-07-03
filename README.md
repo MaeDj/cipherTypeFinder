@@ -62,7 +62,7 @@ Outputs of preprocessing feed into two vector types:
   These features were definded from expert knowledge represented into this ontology like representation: 
 
 <img src="./schema_ontologie_systeme_chiffrement.png" alt="shema_ontology_cipher_type"/>
-  
+
 
 - **Vector Image**
 
@@ -88,7 +88,7 @@ Outputs of preprocessing feed into two vector types:
 
 => Hidden Layer
 
-- Activation function: **ReLU or Tanh**
+- Activation function: **ReLU**
 
 ### Finalization
 
