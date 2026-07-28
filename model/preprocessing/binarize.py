@@ -106,7 +106,7 @@ def binarize_localMinimumMaximum(im):
 	
 	R = np.ones(I.shape)*255
 	R[(I<=E_mean+E_std)&(N_e>=4)] = 0
-	return R
+	return R.astype(np.uint8)
 
 def localminmax(img, fns):
 	mi = img.astype(np.float64)
@@ -134,7 +134,7 @@ def rescale(r,maxvalue=255):
 def start_binarization(method, input_path, output_path):
 	for filename in natsorted(os.listdir(input_path), key = lambda x: x.lower()):
 		im = cv2.imread(os.path.join(input_path,filename),0)
-		bina = binarize(im,method,filename,output_path)
+		bina = binarize(im,method)
 		cv2.imwrite(os.path.join(output_path,filename),bina)
 
 

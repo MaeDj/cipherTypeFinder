@@ -25,13 +25,14 @@ def login (base):
     return(headers)
 
 def get_cipher(base):
-    headers=login(base)
     id_rec=[]
     img=[]
     img_doc=[]
 
      #adjust thhe wanted number of pages
     for index in range(1,200):
+        #re-login for each page since the token only lasts 10 min
+        headers=login(base)
         record=requests.get(f'{base}/api/list/records?page={index}&record_type=1', headers=headers)
         record_doc=record.json()
         for rec in record_doc['records']:
@@ -73,6 +74,11 @@ def image_extension(image_type):
 # Step 3: build a corpus folder with the images and metadata from view_rec
 def corpus_build(base,view_rec):
     CORPUS_DIR = Path('/media/mae/PHILIPS UFD/corpus_cipherTypeFinder_Caramba')
+    #binarize.py reads images from {DATASET_PATH}/original_corpus/img
+    IMG_DIR = CORPUS_DIR / 'original_corpus' / 'img'
+    METADATA_DIR = CORPUS_DIR / 'original_corpus' / 'metadata'
+    IMG_DIR.mkdir(parents=True, exist_ok=True)
+    METADATA_DIR.mkdir(parents=True, exist_ok=True)
 
     saved = 0
     for entry in view_rec:
@@ -84,7 +90,7 @@ def corpus_build(base,view_rec):
                 img_resp = requests.get(rec_meta['url'], headers=headers)
                 img_resp.raise_for_status()
                 ext = image_extension(rec_meta.get('image_type'))
-                with open(CORPUS_DIR / f'{id}{ext}', 'wb') as f:
+                with open(IMG_DIR / f'{id}{ext}', 'wb') as f:
                     f.write(img_resp.content)
             except Exception:
                 print(f"Could not download image for record {id}")
@@ -96,7 +102,7 @@ def corpus_build(base,view_rec):
                 'start_year': rec_meta['start_year'],
                 'cipher_types': rec_meta['cipher_types'],
             }
-            with open(CORPUS_DIR / f'{id}.json', 'w', encoding='utf-8') as f:
+            with open(METADATA_DIR / f'{id}.json', 'w', encoding='utf-8') as f:
                 json.dump(metadata, f, ensure_ascii=False, indent=2)
             saved += 1
 

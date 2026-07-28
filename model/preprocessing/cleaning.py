@@ -98,7 +98,7 @@ for image in os.listdir(input_folder):
         binary_image = 255 - processed_image
         
         #Extract middle zone
-        y_coords, x_coords = np.where(binary_image > 0)
+        y_coords, x_coords = np.where(binary_image == 0)
         
         if len(x_coords) == 0 or len(y_coords) == 0:
             continue  #Skip if no foreground pixels

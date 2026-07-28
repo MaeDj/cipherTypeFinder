@@ -104,19 +104,28 @@ for filename in os.listdir(input_folder):
                 diacritics.append((i, x, y, w, h, area))
 
         #Merge diacritics with their nearest main symbol (vertically aligned)
-        merged_symbols = []
-        for symbol in main_symbols:
+        #Each diacritic is assigned to only the closest aligned main symbol, not every aligned one
+        diacritic_best_match = {}
+        for symbol_pos, symbol in enumerate(main_symbols):
             idx, x, y, w, h, area = symbol
-            merged_indices = [idx]  #Start with the main symbol
-
-            #Find diacritics aligned with this symbol
             symbol_center_x = x + w // 2
-            for diacritic in diacritics:
+            for diac_pos, diacritic in enumerate(diacritics):
                 diac_idx, dx, dy, dw, dh, d_area = diacritic
                 diac_center_x = dx + dw // 2
                 #Check if diacritic is roughly aligned horizontally
-                if abs(diac_center_x - symbol_center_x) < max(w, dw) / 2:
-                    merged_indices.append(diac_idx)
+                distance = abs(diac_center_x - symbol_center_x)
+                if distance < max(w, dw) / 2:
+                    if diac_pos not in diacritic_best_match or distance < diacritic_best_match[diac_pos][1]:
+                        diacritic_best_match[diac_pos] = (symbol_pos, distance)
+
+        merged_symbols = []
+        for symbol_pos, symbol in enumerate(main_symbols):
+            idx, x, y, w, h, area = symbol
+            merged_indices = [idx]  #Start with the main symbol
+
+            for diac_pos, (matched_symbol_pos, _) in diacritic_best_match.items():
+                if matched_symbol_pos == symbol_pos:
+                    merged_indices.append(diacritics[diac_pos][0])
 
             #Merge bounding boxes
             x_min = min([x] + [stats[i][0] for i in merged_indices])
@@ -140,7 +149,8 @@ for filename in os.listdir(input_folder):
             cleaned_symbol = cropped_original.copy()
             cleaned_symbol[cropped_mask == 0] = 255
 
-            symbol_filename = os.path.join(output_folder, f"symbol_{filename}_{global_counter}.png")
+            doc_id = os.path.splitext(filename)[0]
+            symbol_filename = os.path.join(output_folder, f"symbol_{doc_id}_{global_counter}.png")
             cv2.imwrite(symbol_filename, cleaned_symbol)
             
             #Increment the global counter

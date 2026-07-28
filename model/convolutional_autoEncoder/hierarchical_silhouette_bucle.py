@@ -147,7 +147,7 @@ print("\nSearching for optimal distance threshold...")
 #Test a range of thresholds based on common distances in latent space
 test_thresholds = np.linspace(0.5, 2, 16)
 best_score = -1
-best_threshold = 80.0
+best_threshold = float(test_thresholds[len(test_thresholds) // 2])
 
 scores = []
 for t in test_thresholds:
@@ -166,6 +166,9 @@ for t in test_thresholds:
     else:
         scores.append(0)
 
+if best_score == -1:
+    print(f"Warning: no tested threshold produced a valid intermediate clustering (2..N-1 clusters); "
+          f"falling back to the middle of the tested range: {best_threshold:.2f}")
 print(f"\nOptimization Complete. Best Threshold found: {best_threshold:.2f}")
 
 #Plot the Silhouette optimization curve
