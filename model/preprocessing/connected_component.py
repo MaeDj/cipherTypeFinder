@@ -1,0 +1,154 @@
+import cv2
+import numpy as np
+import os
+import pdb
+
+#Initial setup
+DATASET_PATH = f'../corpus'
+
+binarization_methods = ["otsu","gauss","adaptive","niblack","sauvola","local"]
+
+bina_method = False
+while (bina_method not in ["","1","2","3","4","5", "6"]):
+    bina_method = input("Select the binarization method that you used: [Default:5] (1:Otsu 2:Gaussian 3:Adaptive 4:Niblack 5:Sauvola 6:Local) \n")
+if bina_method == "":
+    bina_method = "5"
+bina_method = binarization_methods[int(bina_method)-1]
+
+input_folder = f"{DATASET_PATH}/preprocessing/cleaned/{bina_method}"
+output_folder = f"{DATASET_PATH}/preprocessing/connectedComponent/{bina_method}/symbols"  #Cleaned symbols
+boxes_folder = f"{DATASET_PATH}/preprocessing/connectedComponent/{bina_method}/bounding_boxes" #Bounding box visualization
+os.makedirs(output_folder, exist_ok=True)
+os.makedirs(boxes_folder, exist_ok=True)
+
+#Modify parameter to fit the data
+MIN_AREA = 75
+
+
+def connected_components_with_stats(binary_image, connectivity=4):
+    if connectivity not in (4, 8):
+        raise ValueError("Connectivity must be either 4 or 8.")
+    
+    rows, cols = binary_image.shape
+    visited = np.zeros_like(binary_image, dtype=bool)
+    labels = np.zeros_like(binary_image, dtype=np.int32)
+
+    if connectivity == 4:
+        neighbors = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    else:
+        neighbors = [(-1, 0), (1, 0), (0, -1), (0, 1),
+                     (-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+    current_label = 1  #Label 0 will be background
+    stats = []
+    centroids = []
+
+    for i in range(rows):
+        for j in range(cols):
+            if binary_image[i, j] == 255 and not visited[i, j]:
+                #Begin new component
+                coords = []
+                stack = [(i, j)]
+                while stack:
+                    x, y = stack.pop()
+                    if not (0 <= x < rows and 0 <= y < cols):
+                        continue
+                    if visited[x, y] or binary_image[x, y] != 255:
+                        continue
+                    visited[x, y] = True
+                    labels[x, y] = current_label
+                    coords.append((x, y))
+                    for dx, dy in neighbors:
+                        stack.append((x + dx, y + dy))
+
+                coords_np = np.array(coords)
+                ys, xs = coords_np[:, 0], coords_np[:, 1]
+                x_min, y_min = xs.min(), ys.min()
+                x_max, y_max = xs.max(), ys.max()
+                width = x_max - x_min + 1
+                height = y_max - y_min + 1
+                area = len(coords)
+                cx = xs.mean()
+                cy = ys.mean()
+
+                stats.append([x_min, y_min, width, height, area])
+                centroids.append([cx, cy])
+                current_label += 1
+
+    #Add background as label 0
+    stats = [[0, 0, 0, 0, 0]] + stats
+    centroids = [[0.0, 0.0]] + centroids
+
+    return current_label, labels, np.array(stats, dtype=np.int32), np.array(centroids, dtype=np.float32)
+
+#Tracking total num of characters across all files
+global_counter = 0
+
+for filename in os.listdir(input_folder):
+    if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+        image_path = os.path.join(input_folder, filename)
+        binary_image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+        boxes_image = cv2.cvtColor(binary_image, cv2.COLOR_GRAY2BGR)
+
+        #Invert for connectedComponents (text=white, background=black)
+        _, labels, stats, _ = connected_components_with_stats(255 - binary_image, connectivity=8)
+
+        #Separate main symbols (area >= MIN_AREA) and diacritics (area < MIN_AREA)
+        main_symbols = []
+        diacritics = []
+        for i in range(1, len(stats)):
+            x, y, w, h, area = stats[i]
+            if area >= MIN_AREA:
+                main_symbols.append((i, x, y, w, h, area))
+            else:
+                diacritics.append((i, x, y, w, h, area))
+
+        #Merge diacritics with their nearest main symbol (vertically aligned)
+        merged_symbols = []
+        for symbol in main_symbols:
+            idx, x, y, w, h, area = symbol
+            merged_indices = [idx]  #Start with the main symbol
+
+            #Find diacritics aligned with this symbol
+            symbol_center_x = x + w // 2
+            for diacritic in diacritics:
+                diac_idx, dx, dy, dw, dh, d_area = diacritic
+                diac_center_x = dx + dw // 2
+                #Check if diacritic is roughly aligned horizontally
+                if abs(diac_center_x - symbol_center_x) < max(w, dw) / 2:
+                    merged_indices.append(diac_idx)
+
+            #Merge bounding boxes
+            x_min = min([x] + [stats[i][0] for i in merged_indices])
+            y_min = min([y] + [stats[i][1] for i in merged_indices])
+            x_max = max([x + w] + [stats[i][0] + stats[i][2] for i in merged_indices])
+            y_max = max([y + h] + [stats[i][1] + stats[i][3] for i in merged_indices])
+            new_w, new_h = x_max - x_min, y_max - y_min
+
+            merged_symbols.append((merged_indices, x_min, y_min, new_w, new_h))
+
+        #Save each merged symbol
+        for indices, x, y, w, h in merged_symbols:
+            #Create a mask combining all merged components
+            merged_mask = np.zeros_like(binary_image, dtype=np.uint8)
+            for idx in indices:
+                merged_mask[labels == idx] = 255
+
+            #Crop to bounding box and apply mask
+            cropped_mask = merged_mask[y:y+h, x:x+w]
+            cropped_original = binary_image[y:y+h, x:x+w]
+            cleaned_symbol = cropped_original.copy()
+            cleaned_symbol[cropped_mask == 0] = 255
+
+            symbol_filename = os.path.join(output_folder, f"symbol_{filename}_{global_counter}.png")
+            cv2.imwrite(symbol_filename, cleaned_symbol)
+            
+            #Increment the global counter
+            global_counter += 1
+
+            #raw bounding box (for visualization)
+            cv2.rectangle(boxes_image, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+        #Save visualization with bounding boxes
+        boxes_filename = os.path.join(boxes_folder, f"boxes_{filename}")
+        cv2.imwrite(boxes_filename, boxes_image)
