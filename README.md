@@ -12,7 +12,7 @@ The aim of this program is to get from a raw photo of a (supposedly) ciphered ma
 | 0 | Manuscript detection (CNN) | ❌ Not implemented |
 | 1 | Image & data preprocessing | ✅ Implemented (`model/preprocessing`) |
 | 2 | Character clustering (convolutional autoencoder) | ✅ Implemented (`model/convolutional_autoEncoder`) |
-| 3 | Computable text reconstruction | ❌ Not implemented (`model/txt_equivalent_builder`) |
+| 3 | Computable text reconstruction | ✅ Implemented (`model/txt_equivalent_builder`) |
 | 4 | Cipher type classification (feature vectors + neural network) | Architecture defined, not yet trained end-to-end |
 
 ---
@@ -53,11 +53,16 @@ Implements the character-clustering approach described in *"Unsupervised Feature
 
 ---
 
-## 3. Computable Text Reconstruction *(not implemented yet)*
+## 3. Computable Text Reconstruction (`model/txt_equivalent_builder`)
 
-Once each character has been assigned to a cluster, each manuscript document should be reconstructed as a computable `.txt` equivalent: every character occurrence is replaced, in its original reading order, by a simple, easily-computable symbol representing its cluster (rather than the raw glyph image). This turns each manuscript into plain text that downstream numerical/statistical analysis can work with directly.
+Once each character has been assigned to a cluster, each manuscript document is reconstructed as a computable `.txt` equivalent: every character occurrence is replaced, in its original reading order, by a simple, easily-computable symbol representing its cluster (rather than the raw glyph image). This turns each manuscript into plain text that downstream numerical/statistical analysis can work with directly.
 
-A stub for this step exists in `model/txt_equivalent_builder/txtBuilder.py`, pointing at the output of the clustering step, but the reconstruction logic itself is not implemented yet.
+`txtBuilder.py`:
+
+1. Prompts for the binarization method used upstream (defaults to Sauvola) and lists every document ID present in the corresponding original/binarized corpus folder.
+2. For each document, walks the "Accepted" clusters produced by the character-clustering step and, by matching each character image's filename (`symbol_<doc>_<global_counter>`), links every character back to its document and cluster label, keeping the character's global position counter.
+3. Sorts each document's characters by that position counter to restore the original reading order.
+4. Writes, per document, a plain `.txt` file containing the space-separated sequence of cluster labels (`../corpus/computable/text/<doc>.txt`), plus a companion `.csv` recording each character's cluster label alongside its source image filename (`../corpus/computable/csv/<doc>.csv`) for traceability back to the glyph images.
 
 ---
 
