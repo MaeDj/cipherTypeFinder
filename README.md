@@ -9,7 +9,7 @@ The aim of this program is to get from a raw photo of a (supposedly) ciphered ma
 
 | # | Step | Status |
 |---|------|--------|
-| 0 | Manuscript detection (CNN) | ❌ Not implemented |
+| 0 | Manuscript detection (CNN) | 🚧 Architecture defined (`model/manuscript_detection/CNN.py`), corpus not yet built |
 | 1 | Image & data preprocessing | ✅ Implemented (`model/preprocessing`) |
 | 2 | Character clustering (convolutional autoencoder) | ✅ Implemented (`model/convolutional_autoEncoder`) |
 | 3 | Computable text reconstruction | ✅ Implemented (`model/txt_equivalent_builder`) |
@@ -17,11 +17,13 @@ The aim of this program is to get from a raw photo of a (supposedly) ciphered ma
 
 ---
 
-## 0. Manuscript Detection *(not implemented yet)*
+## 0. Manuscript Detection (`model/manuscript_detection`)
 
-Before any cipher-type analysis, a first CNN should decide whether a raw input image actually looks like a manuscript at all. Any image that is **not** manuscript-like should be routed directly into the "Not encrypted / not a manuscript" output class, without going through the rest of the pipeline.
+This is the **gatekeeper of the whole pipeline**: before any preprocessing, clustering, or cipher-type analysis happens, a binary CNN (`manuscript_detection_CNN.py`) decides whether a raw input image actually looks like a manuscript at all. Any image a user submits that is **not** manuscript-like is rejected here and never reaches the rest of the pipeline — it does not get routed into the "Not encrypted / not a manuscript" cipher-type class from step 4, which only applies to manuscripts that passed this gate but turned out to be unciphered/unreadable.
 
-
+1. **Dataset loading** (`load_custom_dataset`) — reads a corpus of manuscript vs. random images (`../corpus/corpus_manuscript_random/{images,labels}`, not yet built), resizing every image to the same fixed 100×100 canvas used by the rest of the project (see `model/preprocessing/processing_for_clustering.py`), and split 80/20 into train/test with `train_test_split`.
+2. **Architecture** — a small stack of `Conv2D` + `MaxPooling2D` + `Dropout` blocks (32 → 64 → 64 → 128 filters) followed by a `Flatten` → `Dense(64, relu)` → `Dropout` → `Dense(1, sigmoid)` output, trained with binary cross-entropy / Adam.
+3. **Output** — a single probability that the input image is a manuscript; images falling below the decision threshold are rejected before entering the preprocessing stage below. Rejected images are logged to `rejected_documents.csv` (`log_rejected_document`) with their probability for later review, while validated images are copied into the `validated_documents/` folder (`save_validated_document`) via `cv2.imwrite`.
 
 ---
 
