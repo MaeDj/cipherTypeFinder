@@ -22,8 +22,8 @@ if METHOD == "":
 
 METHOD = binarization_methods[int(METHOD)-1]
 #output directory of ../Convolutional_autoEncoder/hierarchical_silhouette_bucle.py
-INPUT_DIRECTORY=f"{DATASET_PATH}/clustering/hierarchical/clusters_{str(LATENT_DIM)}_silhouette_results"
-OUTPUT_DIRECTORY=f"{DATASET_PATH}/computable/"
+INPUT_DIRECTORY=f"{DATASET_PATH}/clustering/hierarchical/clusters_{str(LATENT_DIM)}_silhouette_results/Merged"
+OUTPUT_DIRECTORY=f"{DATASET_PATH}/computable"
 ORIGINAL_DIRECTORY=f"../corpus/preprocessing/binarized/{METHOD}"
 
 

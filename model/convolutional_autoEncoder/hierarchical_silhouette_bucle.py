@@ -209,20 +209,67 @@ for label in range(n_clusters):
 #Variance thresholding
 var_threshold = np.percentile(valid_scores, 80) if valid_scores else 0
 
+#ORIGINAL CLASSIFICATION (unchanged logic, kept in its own folder for comparison)
+ORIGINAL_FOLDER = os.path.join(RESULTS_FOLDER, "Original")
+
 for label in range(n_clusters):
     indices = np.where(labels == label)[0]
     score = cluster_scores[label]
     size = len(indices)
 
     if size < MIN_CLUSTER_SIZE:
-        path = os.path.join(RESULTS_FOLDER, "Rejected_TooSmall", f"Cluster_{label}")
+        path = os.path.join(ORIGINAL_FOLDER, "Rejected_TooSmall", f"Cluster_{label}")
     elif score > var_threshold:
-        path = os.path.join(RESULTS_FOLDER, "Rejected_HighVar", f"Cluster_{label}")
+        path = os.path.join(ORIGINAL_FOLDER, "Rejected_HighVar", f"Cluster_{label}")
     else:
-        path = os.path.join(RESULTS_FOLDER, "Accepted", f"Cluster_{label}_Size{size}")
+        path = os.path.join(ORIGINAL_FOLDER, "Accepted", f"Cluster_{label}_Size{size}")
 
     os.makedirs(path, exist_ok=True)
     for idx in indices:
+        cv2.imwrite(os.path.join(path, filenames[idx]), images[idx])
+
+#MERGED CLASSIFICATION: every character ends up under a single Accepted folder.
+#Too-small clusters keep their own subfolder there; High-Var clusters are
+#split character-by-character into whichever accepted cluster is closest.
+MERGED_FOLDER = os.path.join(RESULTS_FOLDER, "Merged")
+
+high_var_labels = []
+accepted_paths = {}
+accepted_centroids = {}
+
+for label in range(n_clusters):
+    indices = np.where(labels == label)[0]
+    score = cluster_scores[label]
+    size = len(indices)
+
+    if size >= MIN_CLUSTER_SIZE and score > var_threshold:
+        high_var_labels.append(label)
+        continue
+
+    #Too-small or "clean" clusters are saved as their own accepted cluster
+    path = os.path.join(MERGED_FOLDER, "Accepted", f"Cluster_{label}_Size{size}")
+    os.makedirs(path, exist_ok=True)
+    for idx in indices:
+        cv2.imwrite(os.path.join(path, filenames[idx]), images[idx])
+
+    if size >= MIN_CLUSTER_SIZE:
+        accepted_paths[label] = path
+        accepted_centroids[label] = np.mean(features[indices], axis=0)
+
+for label in high_var_labels:
+    indices = np.where(labels == label)[0]
+    for idx in indices:
+        if accepted_centroids:
+            best_label = min(
+                accepted_centroids,
+                key=lambda acc_label: np.linalg.norm(features[idx] - accepted_centroids[acc_label])
+            )
+            path = accepted_paths[best_label]
+        else:
+            #No accepted cluster exists to merge into: keep its own cluster folder
+            #so the character still ends up under Accepted.
+            path = os.path.join(MERGED_FOLDER, "Accepted", f"Cluster_{label}_Size{len(indices)}")
+        os.makedirs(path, exist_ok=True)
         cv2.imwrite(os.path.join(path, filenames[idx]), images[idx])
 
 print(f"Done! Results saved in {RESULTS_FOLDER}")

@@ -49,7 +49,9 @@ Implements the character-clustering approach described in *"Unsupervised Feature
 2. Trains a convolutional autoencoder (3-layer convolutional encoder down to a 64-dimensional latent vector, mirrored transposed-convolutional decoder) to reconstruct each character image (MSE loss, Adam optimizer).
 3. Extracts and L2-normalizes the latent vector of every character from the trained encoder — this is the character's feature representation.
 4. Searches for the optimal distance threshold for Agglomerative (ward-linkage) clustering by scanning a range of thresholds and keeping the one maximizing the silhouette score.
-5. Runs the final hierarchical clustering with that threshold, then filters the resulting clusters: clusters that are too small (<5 members) or too high-variance (top 20% by average intra-cluster distance) are set aside as "Rejected", while the rest are kept as "Accepted" clusters — each ideally corresponding to a single distinct character/glyph.
+5. Runs the final hierarchical clustering with that threshold, then classifies each resulting cluster by size (<5 members = too small) and by average intra-cluster distance (top 20% = too high-variance), and saves the outcome under two parallel folders for comparison:
+   - **`Original/`** — the straightforward classification: too-small and too-high-variance clusters are set aside as "Rejected" (`Rejected_TooSmall`, `Rejected_HighVar`), while the rest are kept as "Accepted" clusters, each ideally corresponding to a single distinct character/glyph.
+   - **`Merged/`** — a lossless variant where no character is discarded: too-small clusters are kept as their own accepted cluster, and every character from a too-high-variance cluster is individually reassigned to whichever accepted cluster's centroid is closest, so all characters end up under a single `Accepted` folder.
 
 ---
 
