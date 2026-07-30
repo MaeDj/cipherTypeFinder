@@ -13,13 +13,14 @@ The aim of this program is to get from a raw photo of a (supposedly) ciphered ma
 | 1 | Image & data preprocessing | ✅ Implemented (`model/preprocessing`) |
 | 2 | Character clustering (convolutional autoencoder) | ✅ Implemented (`model/convolutional_autoEncoder`) |
 | 3 | Computable text reconstruction | ✅ Implemented (`model/txt_equivalent_builder`) |
-| 4 | Cipher type classification (feature vectors + neural network) | Architecture defined, not yet trained end-to-end |
+| 4 | Manuscript statistics (alphabet size, index of coincidence, symbol frequencies) | ✅ Implemented (`model/statistics`) |
+| 5 | Cipher type classification (feature vectors + neural network) | Architecture defined, not yet trained end-to-end |
 
 ---
 
 ## 0. Manuscript Detection (`model/manuscript_detection`)
 
-This is the **gatekeeper of the whole pipeline**: before any preprocessing, clustering, or cipher-type analysis happens, a binary CNN (`manuscript_detection_CNN.py`) decides whether a raw input image actually looks like a manuscript at all. Any image a user submits that is **not** manuscript-like is rejected here and never reaches the rest of the pipeline — it does not get routed into the "Not encrypted / not a manuscript" cipher-type class from step 4, which only applies to manuscripts that passed this gate but turned out to be unciphered/unreadable.
+This is the **gatekeeper of the whole pipeline**: before any preprocessing, clustering, or cipher-type analysis happens, a binary CNN (`manuscript_detection_CNN.py`) decides whether a raw input image actually looks like a manuscript at all. Any image a user submits that is **not** manuscript-like is rejected here and never reaches the rest of the pipeline — it does not get routed into the "Not encrypted / not a manuscript" cipher-type class from step 5, which only applies to manuscripts that passed this gate but turned out to be unciphered/unreadable.
 
 1. **Dataset loading** (`load_custom_dataset`) — reads a corpus of manuscript vs. random images (`../corpus/corpus_manuscript_random/{images,labels}`, not yet built), resizing every image to the same fixed 100×100 canvas used by the rest of the project (see `model/preprocessing/processing_for_clustering.py`), and split 80/20 into train/test with `train_test_split`.
 2. **Architecture** — a small stack of `Conv2D` + `MaxPooling2D` + `Dropout` blocks (32 → 64 → 64 → 128 filters) followed by a `Flatten` → `Dense(64, relu)` → `Dropout` → `Dense(1, sigmoid)` output, trained with binary cross-entropy / Adam.
@@ -70,11 +71,26 @@ Once each character has been assigned to a cluster, each manuscript document is 
 
 ---
 
-## 4. Cipher Type Classification
+## 4. Manuscript Statistics (`model/statistics`)
+
+Once the computable `.txt` equivalents exist, each document is run through a statistical analysis that turns its symbol sequence into the numerical features consumed by the classification model in step 5.
+
+`equivalent_txt_manuscripts_stats.py`:
+
+1. Lists every document ID present in `../corpus/computable/text` and splits each document's `.txt` equivalent back into its ordered list of symbols.
+2. For each document, computes:
+   - **Alphabet size** — number of distinct symbols used in the document.
+   - **Index of coincidence** — probability that two symbols drawn at random from the document are identical.
+   - **Symbol frequencies** — occurrence count and relative frequency of every symbol.
+3. Registers all documents into a single `.csv` (`../corpus/computable/statistics/manuscripts_stats.csv`): one row per document (`doc_id`, `total_symbols`, `alphabet_size`, `coincidence_index`), followed by one `freq_<symbol>` column per symbol found anywhere in the corpus (0 where a document doesn't use that symbol) — so every document row shares the same columns while alphabet size and index of coincidence are each stored only once per document.
+
+---
+
+## 5. Cipher Type Classification
 
 From this point on, the logic follows the architecture below: a computable text equivalent of the manuscript (character-cluster based) plus the preprocessed image data are combined and fed into the classification model.
 
-### 4.1 Feature Vectors
+### 5.1 Feature Vectors
 
 Outputs of preprocessing/clustering feed into two vector types:
 
@@ -83,7 +99,7 @@ Outputs of preprocessing/clustering feed into two vector types:
   - Character occurrence values
   - Glyph number into the alphabet
   - (Characters per pool?)(depend of the implementation of space recognition during preprocessing)
-  That were deduced from a statistic analysis computable text equivalent of the manuscript.
+  That were deduced from a statistic analysis computable text equivalent of the manuscript (see step 4, `model/statistics`).
 
   These features were defined from expert knowledge represented in this ontology-like representation:
 
@@ -91,7 +107,7 @@ Outputs of preprocessing/clustering feed into two vector types:
 
 - **Vector Image**, made from the manuscript's image patches.
 
-### 4.2 Neural Network Architecture
+### 5.2 Neural Network Architecture
 
 **Fusion**
 => Flatten Layer
@@ -109,7 +125,7 @@ Outputs of preprocessing/clustering feed into two vector types:
 - Backpropagation function / Optimization: **Adam**
 - Evaluation metric: **Precision**
 
-### 4.3 Output: Cipher Type (Classification)
+### 5.3 Output: Cipher Type (Classification)
 
 - Not encrypted / not a manuscript
 - Machine
