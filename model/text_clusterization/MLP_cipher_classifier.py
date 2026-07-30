@@ -4,6 +4,7 @@
 #Reference: https://scikit-learn.org/stable/modules/neural_networks_supervised.html
 ###
 import pandas as pd
+from numpy.f2py.symbolic import as_ge
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, MultiLabelBinarizer
 from sklearn.pipeline import make_pipeline
@@ -87,6 +88,12 @@ def main():
 
     return model, label_names
 
+
+#TODO Upgrade: create at the beginning of the pipeline a writer/reader system to allow the user to add informations about his document
+#- date v
+#- origin v
+#- plain text language -> for Coincidence index
+#- list of character: numerical, sign, alchemy
 
 #Predict the cipher type(s) of a single document from its statistics row (same feature_columns order
 #as load_dataset), returning every label whose predicted probability clears the threshold
