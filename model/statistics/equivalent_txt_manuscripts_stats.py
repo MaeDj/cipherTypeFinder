@@ -5,16 +5,20 @@
 import os
 import re
 import csv
+import json
 
-
+ORIGINAL_DATASET_METADATA_PATH='/media/mae/PHILIPS UFD/corpus_cipherTypeFinder_Caramba/original_corpus/metadata'
 #dataset folder root
 DATASET_PATH = '../corpus'
-
 #input directory, written by ../txt_equivalent_builder/txtBuilder.py
 INPUT_DIRECTORY = f"{DATASET_PATH}/computable/text"
 #output directory for the statistics .csv
 OUTPUT_DIRECTORY = f"{DATASET_PATH}/computable/statistics"
 OUTPUT_CSV = f"{OUTPUT_DIRECTORY}/manuscripts_stats.csv"
+
+#metadata columns written by ../corpus_builder/fetch_data.py, identical across every document
+#(origin_region/origin_city are merged into a single 'origin' column, see read_metadata)
+METADATA_FIELDS = ['origin', 'start_year', 'cipher_types']
 
 
 #Read a computable .txt equivalent and split it into its ordered list of symbols
@@ -54,6 +58,24 @@ def coincidence_index(symbols):
     return numerator / (total * (total - 1))
 
 
+#Read a document's original metadata written by ../corpus_builder/fetch_data.py
+#origin_region and origin_city are merged into a single 'origin' field, giving origin_city priority
+#and falling back to origin_region (fetch_data.py only ever requires at least one of the two to be set)
+def read_metadata(doc):
+    metadata_path = os.path.join(ORIGINAL_DATASET_METADATA_PATH, f"{doc}.json")
+    if not os.path.isfile(metadata_path):
+        return {field: '' for field in METADATA_FIELDS}
+
+    with open(metadata_path, 'r', encoding='utf-8') as metadata_file:
+        metadata = json.load(metadata_file)
+
+    return {
+        'origin': metadata.get('origin_city') or metadata.get('origin_region') or '',
+        'start_year': metadata.get('start_year', ''),
+        'cipher_types': metadata.get('cipher_types', ''),
+    }
+
+
 #Find every document id from the .txt files available into the input directory
 def doc_id():
     docId_list = []
@@ -64,7 +86,8 @@ def doc_id():
     return docId_list
 
 
-#Register alphabet size, coincidence index and each symbol's frequency of every document into a single .csv
+#Register the original metadata, alphabet size, coincidence index and each symbol's frequency of
+#every document into a single .csv
 #One row per document, one freq_<symbol> column per symbol found across the whole corpus, so
 #alphabet_size/coincidence_index are only ever stored once per document instead of once per symbol row
 def register_statistics(dict_doc_symbols):
@@ -75,11 +98,14 @@ def register_statistics(dict_doc_symbols):
 
     with open(OUTPUT_CSV, 'w', newline='', encoding='utf-8') as csv_file:
         writer = csv.writer(csv_file)
-        writer.writerow(['doc_id', 'total_symbols', 'alphabet_size', 'coincidence_index'] + [f"freq_{symbol}" for symbol in corpus_alphabet])
+        writer.writerow(['doc_id'] + METADATA_FIELDS + ['total_symbols', 'alphabet_size', 'coincidence_index'] + [f"freq_{symbol}" for symbol in corpus_alphabet])
 #WARNING: to use coincidence index, there need to also use plaintext language metadata.
         for doc, symbols in dict_doc_symbols.items():
             _, frequencies = symbol_frequencies(symbols)
-            row = [doc, len(symbols), alphabet_size(symbols), coincidence_index(symbols)]
+            metadata = read_metadata(doc)
+
+            row = [doc] + [metadata[field] for field in METADATA_FIELDS]
+            row += [len(symbols), alphabet_size(symbols), coincidence_index(symbols)]
             row += [frequencies.get(symbol, 0) for symbol in corpus_alphabet]
             writer.writerow(row)
 

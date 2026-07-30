@@ -14,7 +14,7 @@ The aim of this program is to get from a raw photo of a (supposedly) ciphered ma
 | 2 | Character clustering (convolutional autoencoder) | ✅ Implemented (`model/convolutional_autoEncoder`) |
 | 3 | Computable text reconstruction | ✅ Implemented (`model/txt_equivalent_builder`) |
 | 4 | Manuscript statistics (alphabet size, index of coincidence, symbol frequencies) | ✅ Implemented (`model/statistics`) |
-| 5 | Cipher type classification (feature vectors + neural network) | Architecture defined, not yet trained end-to-end |
+| 5 | Cipher type classification (feature vectors + neural network) | 🚧 Tabular-only baseline implemented (`model/text_clusterization/MLP_cipher_classifier.py`); full image+tabular fusion architecture still just defined |
 
 ---
 
@@ -88,26 +88,49 @@ Once the computable `.txt` equivalents exist, each document is run through a sta
 
 ## 5. Cipher Type Classification
 
-From this point on, the logic follows the architecture below: a computable text equivalent of the manuscript (character-cluster based) plus the preprocessed image data are combined and fed into the classification model.
+### 5.1 Implemented Baseline: Tabular MLP (`model/text_clusterization/MLP_cipher_classifier.py`)
 
-### 5.1 Feature Vectors
+A first baseline is implemented and runnable end-to-end: a multi-label `MLPClassifier` (scikit-learn, see [neural_networks_supervised](https://scikit-learn.org/stable/modules/neural_networks_supervised.html)) trained purely on the tabular statistics from step 4 — it does not yet use the manuscript image data described in the target architecture below.
+
+- **Input**: `manuscripts_stats.csv` (step 4's output). Features used: `total_symbols`, `alphabet_size`, `coincidence_index` and every `freq_<symbol>` column.
+- **Labels**: `cipher_types`, as recorded by the DECODE Records Database (see Data Acquisition below), is a comma-separated field — a manuscript can combine several cipher types at once — making this a genuine multi-label problem rather than multi-class. `MultiLabelBinarizer` turns it into one binary column per class:
+
+  | Code | Class |
+  |------|-------|
+  | 1 | Monoalphabetic |
+  | 2 | Homophonic |
+  | 3 | Machine |
+  | 4 | Polyalphabetic |
+  | 5 | Nomenclature |
+  | 7 | Polyphonic |
+
+- **Model**: `StandardScaler` → `MLPClassifier(hidden_layer_sizes=(64, 32), activation='relu', solver='adam', early_stopping=True)`. Since the target is a 2D binary matrix rather than a single label column, scikit-learn puts one sigmoid unit per class on the output layer instead of a single softmax, natively supporting multi-label prediction and per-class probabilities (`predict_proba`).
+- **Evaluation**: per-class `classification_report`, exact-match accuracy, Hamming loss, and samples-averaged Jaccard score — plain accuracy is misleading for multi-label problems, so these are reported instead.
+
+### 5.2 Target Architecture: Image + Tabular Fusion (planned, not yet implemented)
+
+The intended final model goes further than the tabular baseline above by also feeding in the manuscript's image patches, fusing both vector types before classification.
+This upgrade is not already available and ask for an image preprocessing + image patching + image encoder to get image vectorial representation.
+
+#### 5.2.1 Feature Vectors
 
 Outputs of preprocessing/clustering feed into two vector types:
 
 - **Vector Numerical Data**, made from:
-  - Character frequencies
-  - Character occurrence values
-  - Glyph number into the alphabet
-  - (Characters per pool?)(depend of the implementation of space recognition during preprocessing)
-  That were deduced from a statistic analysis computable text equivalent of the manuscript (see step 4, `model/statistics`).
-
+  - The tabular data made in 5.1 with information that were deduced from a statistic analysis of computable text equivalent of the manuscript (see step 4, `model/statistics`). This is the vector currently consumed alone by the 5.1 baseline.
+  - UPGRADE NOT ALREADY AVAILABLE: cut off step 5.1 to implement instead a tabular data encoder and merge image and tabular data vector.
+  - 
   These features were defined from expert knowledge represented in this ontology-like representation:
 
   <img src="./schema_ontologie_systeme_chiffremen.png" alt="shema_ontology_cipher_type"/>
 
-- **Vector Image**, made from the manuscript's image patches.
+- **Vector Image**, 
+UPGRADE NOT ALREADY AVAILABLE: made from the manuscript's image patches.
 
-### 5.2 Neural Network Architecture
+#### 5.2.2 Neural Network Architecture
+
+
+UPGRADE NOT ALREADY AVAILABLE:
 
 **Fusion**
 => Flatten Layer
@@ -125,17 +148,19 @@ Outputs of preprocessing/clustering feed into two vector types:
 - Backpropagation function / Optimization: **Adam**
 - Evaluation metric: **Precision**
 
-### 5.3 Output: Cipher Type (Classification)
+#### 5.2.3 Output: Cipher Type (Classification)
 
 - Not encrypted / not a manuscript
 - Machine
 - Homophonic
-- Transposition
-- Code book
+- Nomenclature
 - Polyalphabetic
-- Simple Monoalphabetic
+- Polyphonic
+- Monoalphabetic
 
 Each class outputs a **Probability P**. Multiple-class predictions can also be considered; experts will define a threshold to decide which predictions are acceptable.
+
+Note: this draft class list predates the DECODE `cipher_types` taxonomy actually used by the 5.1 baseline (Monoalphabetic/Homophonic/Machine/Polyalphabetic/Nomenclature/Polyphonic) — it should be reconciled with that taxonomy once the fusion model is built, rather than treated as a separate target label set.
 
 ---
 
