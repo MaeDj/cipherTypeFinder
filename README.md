@@ -15,6 +15,24 @@ The aim of this program is to get from a raw photo of a (supposedly) ciphered ma
 | 3 | Computable text reconstruction | ✅ Implemented (`model/txt_equivalent_builder`) |
 | 4 | Manuscript statistics (alphabet size, index of coincidence, symbol frequencies) | ✅ Implemented (`model/statistics`) |
 | 5 | Cipher type classification (feature vectors + neural network) | 🚧 Tabular-only baseline implemented (`model/text_clusterization/MLP_cipher_classifier.py`); full image+tabular fusion architecture still just defined |
+| — | User-provided document info (origin, date, plaintext language, character type) | ✅ Implemented (`model/user_interface/user_caller.py`) |
+
+---
+
+## User-Provided Document Info (`model/user_interface`)
+
+Before (or alongside) the automated pipeline, `user_caller.py` lets a user attach expert knowledge about their own document that cannot be inferred from the image alone:
+
+1. **`prompt_folder_path`** — asks for the folder containing the user's document, re-prompting until it points to an existing directory.
+2. **`read_existing_info`** — loads a previously saved `document_info.json` from that folder, if any, so the user can revisit and edit prior answers instead of starting blank.
+3. **`collect_document_info`** — interactively gathers four optional fields, each of which can be left/set to `None`:
+   - **Origin**
+   - **Date**
+   - **Plain text language** (useful for interpreting the index of coincidence)
+   - **Character type** 
+4. **`write_info`** — persists the collected answers back into `document_info.json` inside the document's folder.
+
+Origin, date and plaintext language are no longer hardcoded gaps, they are now user-suppliable inputs that the classifier below knows how to consume.
 
 ---
 
@@ -82,7 +100,7 @@ Once the computable `.txt` equivalents exist, each document is run through a sta
    - **Alphabet size** — number of distinct symbols used in the document.
    - **Index of coincidence** — probability that two symbols drawn at random from the document are identical.
    - **Symbol frequencies** — occurrence count and relative frequency of every symbol.
-3. Registers all documents into a single `.csv` (`../corpus/computable/statistics/manuscripts_stats.csv`): one row per document (`doc_id`, `total_symbols`, `alphabet_size`, `coincidence_index`), followed by one `freq_<symbol>` column per symbol found anywhere in the corpus (0 where a document doesn't use that symbol) — so every document row shares the same columns while alphabet size and index of coincidence are each stored only once per document.
+3. Registers all documents into a single `.csv` (`../corpus/computable/statistics/manuscripts_stats.csv`): one row per document (`doc_id`, `total_symbols`, `alphabet_size`, `coincidence_index`), the DECODE metadata carried over from `fetch_data.py` (`origin`, `start_year`, `cipher_types`, `plaintext_lang`, `symbol_sets`), followed by one `freq_<symbol>` column per symbol found anywhere in the corpus (0 where a document doesn't use that symbol) — so every document row shares the same columns while metadata and index of coincidence are each stored only once per document.
 
 ---
 
@@ -92,7 +110,13 @@ Once the computable `.txt` equivalents exist, each document is run through a sta
 
 A first baseline is implemented and runnable end-to-end: a multi-label `MLPClassifier` (scikit-learn, see [neural_networks_supervised](https://scikit-learn.org/stable/modules/neural_networks_supervised.html)) trained purely on the tabular statistics from step 4 — it does not yet use the manuscript image data described in the target architecture below.
 
-- **Input**: `manuscripts_stats.csv` (step 4's output). Features used: `total_symbols`, `alphabet_size`, `coincidence_index` and every `freq_<symbol>` column.
+- **Input**: `manuscripts_stats.csv` (step 4's output). Features used:
+  - **Numeric**: `total_symbols`, `alphabet_size`, `coincidence_index`, `start_year` and every `freq_<symbol>` column, with missing values imputed to the column median (`numeric_medians`).
+  - **Origin**: one-hot encoded (`OneHotEncoder(handle_unknown='ignore')`), so an unseen/missing origin at prediction time is safely encoded as all-zero rather than erroring.
+  - **Plaintext language** (`plaintext_lang`): free-text field (e.g. `"French? Portuguese?"`) parsed into lowercase alphabetic tokens (`parse_plaintext_lang`) and multi-label binarized (`lang_binarizer`), since a document can list several candidate languages.
+  - **Symbol sets** (`symbol_sets`): comma-separated codes parsed with `split_codes` and multi-label binarized (`symbol_set_binarizer`).
+  
+  All four groups are concatenated into a single feature matrix (`load_dataset`), and every fitted encoder is returned alongside it so a brand-new document — described only by the user through `user_caller.py` — can be encoded the same way via `build_feature_row` before being passed to `predict_cipher_types`. Every field besides the base tabular statistics is optional: a missing origin, language or symbol set degrades gracefully instead of blocking prediction.
 - **Labels**: `cipher_types`, as recorded by the DECODE Records Database (see Data Acquisition below), is a comma-separated field — a manuscript can combine several cipher types at once — making this a genuine multi-label problem rather than multi-class. `MultiLabelBinarizer` turns it into one binary column per class:
 
   | Code | Class |
@@ -170,4 +194,4 @@ Note: this draft class list predates the DECODE `cipher_types` taxonomy actually
 
 ## Data Acquisition
 
-Input ciphered documents (`.jpg`) come from the DECODE Records Database of the DE-CRYPT Project. `model/corpus_builder/fetch_data.py` logs into the DE-CRYPT API, lists eligible records (excluding cipher type `6`, i.e. undetermined), and downloads their images and metadata (origin region/city, start year, cipher types) into a local corpus folder.
+Input ciphered documents (`.jpg`) come from the DECODE Records Database of the DE-CRYPT Project. `model/corpus_builder/fetch_data.py` logs into the DE-CRYPT API, lists eligible records — excluding cipher type `6` (undetermined) and any record whose `plaintext_lang` isn't confidently one of the currently supported languages (French, Portuguese, German, Spanish, Latin, Italian, English; see `is_allowed_plaintext_lang`) — and downloads their images and metadata (origin region/city, start year, cipher types, plaintext language, symbol sets) into a local corpus folder.

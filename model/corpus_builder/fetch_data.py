@@ -1,6 +1,7 @@
 import json
 import mimetypes
 import os
+import re
 from pathlib import Path
 
 import requests
@@ -9,6 +10,18 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE = 'https://de-crypt.org/decrypt-web'
+
+ALLOWED_PLAINTEXT_LANGS = {'french', 'portuguese', 'german', 'spanish', 'latin', 'italian', 'english'}
+
+def is_allowed_plaintext_lang(plaintext_lang):
+    # plaintext_lang can list several languages (e.g. "French? Portuguese?"),
+    # possibly separated by commas/spaces and marked uncertain with "?"
+    if not plaintext_lang:
+        return False
+    langs = re.findall(r'[A-Za-z]+', plaintext_lang)
+    if not langs:
+        return False
+    return all(lang.lower() in ALLOWED_PLAINTEXT_LANGS for lang in langs)
 
 def login (base):
     login_resp = requests.post(f'{base}/api/login', data={
@@ -49,10 +62,10 @@ def get_image_metadata(base,id_rec):
         view=requests.get(f'{base}/api/view/records/{id}', headers=headers)
         try:
             view_doc=view.json()
-            if (view_doc['records']['origin_region'] is not None or view_doc['records']['origin_city'] is not None) and view_doc['records']['start_year'] is not None and (view_doc['records']['cipher_types'] is not None and view_doc['records']['cipher_types'] != '') and '6' not in [c.strip() for c in view_doc['records']['cipher_types'].split(',')] :
+            if (view_doc['records']['origin_region'] is not None or view_doc['records']['origin_city'] is not None) and view_doc['records']['start_year'] is not None and (view_doc['records']['cipher_types'] is not None and view_doc['records']['cipher_types'] != '') and '6' not in [c.strip() for c in view_doc['records']['cipher_types'].split(',')] and is_allowed_plaintext_lang(view_doc['records'].get('plaintext_lang')):
                 image = requests.get(f'{base}/api/view/images/{id}', headers=headers)
                 images_doc = image.json()
-                view_rec.append({id:{'origin_region':view_doc['records']['origin_region'], 'origin_city':view_doc['records']['origin_city'], 'start_year':view_doc['records']['start_year'], 'cipher_types':view_doc['records']['cipher_types'],'url':images_doc['images']['path']['url'], 'image_type':images_doc['images']['path']['type']}})
+                view_rec.append({id:{'origin_region':view_doc['records']['origin_region'], 'origin_city':view_doc['records']['origin_city'], 'start_year':view_doc['records']['start_year'], 'cipher_types':view_doc['records']['cipher_types'],'plaintext_lang':view_doc['records']['plaintext_lang'],'symbol_sets':view_doc['records']['symbol_sets'],'url':images_doc['images']['path']['url'], 'image_type':images_doc['images']['path']['type']}})
         except:
             print(f"Unusable image in records {id}")
 
@@ -101,6 +114,8 @@ def corpus_build(base,view_rec):
                 'origin_city': rec_meta['origin_city'],
                 'start_year': rec_meta['start_year'],
                 'cipher_types': rec_meta['cipher_types'],
+                'plaintext_lang': rec_meta['plaintext_lang'],
+                'symbol_sets': rec_meta['symbol_sets'],
             }
             with open(METADATA_DIR / f'{id}.json', 'w', encoding='utf-8') as f:
                 json.dump(metadata, f, ensure_ascii=False, indent=2)

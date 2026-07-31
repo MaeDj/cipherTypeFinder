@@ -18,7 +18,7 @@ OUTPUT_CSV = f"{OUTPUT_DIRECTORY}/manuscripts_stats.csv"
 
 #metadata columns written by ../corpus_builder/fetch_data.py, identical across every document
 #(origin_region/origin_city are merged into a single 'origin' column, see read_metadata)
-METADATA_FIELDS = ['origin', 'start_year', 'cipher_types']
+METADATA_FIELDS = ['origin', 'start_year', 'cipher_types', 'plaintext_lang', 'symbol_sets']
 
 
 #Read a computable .txt equivalent and split it into its ordered list of symbols
@@ -73,6 +73,8 @@ def read_metadata(doc):
         'origin': metadata.get('origin_city') or metadata.get('origin_region') or '',
         'start_year': metadata.get('start_year', ''),
         'cipher_types': metadata.get('cipher_types', ''),
+        'plaintext_lang': metadata.get('plaintext_lang', ''),
+        'symbol_sets': metadata.get('symbol_sets', ''),
     }
 
 
