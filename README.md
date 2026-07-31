@@ -98,9 +98,9 @@ Once the computable `.txt` equivalents exist, each document is run through a sta
 1. Lists every document ID present in `../corpus/computable/text` and splits each document's `.txt` equivalent back into its ordered list of symbols.
 2. For each document, computes:
    - **Alphabet size** — number of distinct symbols used in the document.
-   - **Index of coincidence** — probability that two symbols drawn at random from the document are identical.
+   - **Index of coincidence difference** (`coincidence_index`) — the document's actual index of coincidence (probability that two symbols drawn at random from the document are identical) minus the expected index of coincidence for its stated plaintext language(s) (`plaintext_lang`, tokenized to tolerate free text like `"French? Portuguese?"` and averaged across every recognized language listed). `None`/empty when `plaintext_lang` names no recognized language, so the raw index alone can't be compared meaningfully.
    - **Symbol frequencies** — occurrence count and relative frequency of every symbol.
-3. Registers all documents into a single `.csv` (`../corpus/computable/statistics/manuscripts_stats.csv`): one row per document (`doc_id`, `total_symbols`, `alphabet_size`, `coincidence_index`), the DECODE metadata carried over from `fetch_data.py` (`origin`, `start_year`, `cipher_types`, `plaintext_lang`, `symbol_sets`), followed by one `freq_<symbol>` column per symbol found anywhere in the corpus (0 where a document doesn't use that symbol) — so every document row shares the same columns while metadata and index of coincidence are each stored only once per document.
+3. Registers all documents into a single `.csv` (`../corpus/computable/statistics/manuscripts_stats.csv`): one row per document (`doc_id`, `total_symbols`, `alphabet_size`, `coincidence_index`), the DECODE metadata carried over from `fetch_data.py` (`origin`, `start_year`, `cipher_types`, `symbol_sets`), followed by one `freq_<symbol>` column per symbol found anywhere in the corpus (0 where a document doesn't use that symbol) — so every document row shares the same columns while metadata and index of coincidence are each stored only once per document. `plaintext_lang` itself is deliberately excluded from the `.csv`: it's only used internally to compute `coincidence_index`.
 
 ---
 
@@ -111,12 +111,11 @@ Once the computable `.txt` equivalents exist, each document is run through a sta
 A first baseline is implemented and runnable end-to-end: a multi-label `MLPClassifier` (scikit-learn, see [neural_networks_supervised](https://scikit-learn.org/stable/modules/neural_networks_supervised.html)) trained purely on the tabular statistics from step 4 — it does not yet use the manuscript image data described in the target architecture below.
 
 - **Input**: `manuscripts_stats.csv` (step 4's output). Features used:
-  - **Numeric**: `total_symbols`, `alphabet_size`, `coincidence_index`, `start_year` and every `freq_<symbol>` column, with missing values imputed to the column median (`numeric_medians`).
+  - **Numeric**: `total_symbols`, `alphabet_size`, `coincidence_index`, `start_year` and every `freq_<symbol>` column, with missing values imputed to the column median (`numeric_medians`). `coincidence_index` already folds in the document's `plaintext_lang` at step 4 (it's the difference against that language's expected index of coincidence), which is why `plaintext_lang` itself isn't re-encoded as a separate feature here.
   - **Origin**: one-hot encoded (`OneHotEncoder(handle_unknown='ignore')`), so an unseen/missing origin at prediction time is safely encoded as all-zero rather than erroring.
-  - **Plaintext language** (`plaintext_lang`): free-text field (e.g. `"French? Portuguese?"`) parsed into lowercase alphabetic tokens (`parse_plaintext_lang`) and multi-label binarized (`lang_binarizer`), since a document can list several candidate languages.
   - **Symbol sets** (`symbol_sets`): comma-separated codes parsed with `split_codes` and multi-label binarized (`symbol_set_binarizer`).
   
-  All four groups are concatenated into a single feature matrix (`load_dataset`), and every fitted encoder is returned alongside it so a brand-new document — described only by the user through `user_caller.py` — can be encoded the same way via `build_feature_row` before being passed to `predict_cipher_types`. Every field besides the base tabular statistics is optional: a missing origin, language or symbol set degrades gracefully instead of blocking prediction.
+  All three groups are concatenated into a single feature matrix (`load_dataset`), and every fitted encoder is returned alongside it so a brand-new document — described only by the user through `user_caller.py` — can be encoded the same way via `build_feature_row` before being passed to `predict_cipher_types`. Every field besides the base tabular statistics is optional: a missing origin or symbol set degrades gracefully instead of blocking prediction.
 - **Labels**: `cipher_types`, as recorded by the DECODE Records Database (see Data Acquisition below), is a comma-separated field — a manuscript can combine several cipher types at once — making this a genuine multi-label problem rather than multi-class. `MultiLabelBinarizer` turns it into one binary column per class:
 
   | Code | Class |

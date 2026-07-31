@@ -16,9 +16,12 @@ INPUT_DIRECTORY = f"{DATASET_PATH}/computable/text"
 OUTPUT_DIRECTORY = f"{DATASET_PATH}/computable/statistics"
 OUTPUT_CSV = f"{OUTPUT_DIRECTORY}/manuscripts_stats.csv"
 
-#metadata columns written by ../corpus_builder/fetch_data.py, identical across every document
-#(origin_region/origin_city are merged into a single 'origin' column, see read_metadata)
-METADATA_FIELDS = ['origin', 'start_year', 'cipher_types', 'plaintext_lang', 'symbol_sets']
+#metadata columns written to the output .csv (identical across every document, written by
+#../corpus_builder/fetch_data.py); origin_region/origin_city are merged into a single 'origin' column
+#(see read_metadata). plaintext_lang is deliberately excluded from the .csv (it's only used internally
+#to compute coincidence_index, see read_metadata/register_statistics)
+METADATA_FIELDS = ['origin', 'start_year', 'cipher_types', 'symbol_sets']
+COINCIDENCE_INDEX_CORRESPONDENCE={'french':0.0778,'english':0.0667,'spanish':0.0770,'portuguese':0.0745,'german':0.0762,'latin':0.0765,"italian":0.0738}
 
 
 #Read a computable .txt equivalent and split it into its ordered list of symbols
@@ -48,14 +51,21 @@ def symbol_frequencies(symbols):
 
 
 #Index of coincidence: probability that two symbols drawn at random from the document are identical
-def coincidence_index(symbols):
+#Difference against the expected index of coincidence of the document's stated plaintext language(s):
+def coincidence_index_difference(lang,symbols):
     total = len(symbols)
     if total < 2:
         return 0
 
+    matched_ics = [IC for language, IC in COINCIDENCE_INDEX_CORRESPONDENCE.items()
+                   if language in {token.lower() for token in re.findall(r'[A-Za-z]+', lang or '')}]
+    if not matched_ics:
+        return None
+    original_IC = sum(matched_ics) / len(matched_ics)
+
     counts, _ = symbol_frequencies(symbols)
     numerator = sum(count * (count - 1) for count in counts.values())
-    return numerator / (total * (total - 1))
+    return (numerator / (total * (total - 1))) - original_IC
 
 
 #Read a document's original metadata written by ../corpus_builder/fetch_data.py
@@ -107,7 +117,7 @@ def register_statistics(dict_doc_symbols):
             metadata = read_metadata(doc)
 
             row = [doc] + [metadata[field] for field in METADATA_FIELDS]
-            row += [len(symbols), alphabet_size(symbols), coincidence_index(symbols)]
+            row += [len(symbols), alphabet_size(symbols), coincidence_index_difference(metadata.get('plaintext_lang', ''),symbols)]
             row += [frequencies.get(symbol, 0) for symbol in corpus_alphabet]
             writer.writerow(row)
 

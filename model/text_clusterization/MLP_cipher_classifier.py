@@ -3,10 +3,8 @@
 #character-repartition statistics computed by ../statistics/equivalent_txt_manuscripts_stats.py
 #Reference: https://scikit-learn.org/stable/modules/neural_networks_supervised.html
 ###
-import re
 import numpy as np
 import pandas as pd
-from numpy.f2py.symbolic import as_ge
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, MultiLabelBinarizer, OneHotEncoder
 from sklearn.pipeline import make_pipeline
@@ -45,22 +43,15 @@ def parse_cipher_types(raw_value):
     return [int(token) for token in split_codes(raw_value) if token.isdigit() and int(token) in CIPHER_TYPE_LABELS]
 
 
-#plaintext_lang may list several languages informally (eg "French? Portuguese?"), so only the
-#alphabetic tokens are kept, lowercased, regardless of punctuation/separators used
-def parse_plaintext_lang(raw_value):
-    if not isinstance(raw_value, str):
-        return []
-    return sorted(set(token.lower() for token in re.findall(r'[A-Za-z]+', raw_value)))
-
-
 #All metadata fields below are facultative: a document missing one of them must still be encoded
 #(not dropped, not erroring), which is why every encoder here is fit to tolerate missing/unseen input
 #(OneHotEncoder(handle_unknown='ignore'), MultiLabelBinarizer on a possibly-empty token list, median
 #imputation for start_year).
 #Build the feature matrix (character-repartition statistics plus optional origin/start_year/
-#plaintext_lang/symbol_sets metadata) and the multi-label target matrix (one binary column per
-#cipher type, ordered like CIPHER_TYPE_LABELS) from the stats .csv. Also returns the fitted encoders
-#so a new document can later be encoded the same way (see build_feature_row)
+#symbol_sets metadata; plaintext_lang is deliberately excluded from the stats .csv, see
+#../statistics/equivalent_txt_manuscripts_stats.py) and the multi-label target matrix (one binary
+#column per cipher type, ordered like CIPHER_TYPE_LABELS) from the stats .csv. Also returns the fitted
+#encoders so a new document can later be encoded the same way (see build_feature_row)
 def load_dataset(csv_path):
     df = pd.read_csv(csv_path)
 
@@ -79,13 +70,10 @@ def load_dataset(csv_path):
     origin_encoder = OneHotEncoder(handle_unknown='ignore')
     origin_features = origin_encoder.fit_transform(df[['origin']].fillna('unknown').astype(str)).toarray()
 
-    lang_binarizer = MultiLabelBinarizer()
-    lang_features = lang_binarizer.fit_transform(df['plaintext_lang'].apply(parse_plaintext_lang))
-
     symbol_set_binarizer = MultiLabelBinarizer()
     symbol_set_features = symbol_set_binarizer.fit_transform(df['symbol_sets'].apply(split_codes))
 
-    x = np.hstack([numeric_features, origin_features, lang_features, symbol_set_features])
+    x = np.hstack([numeric_features, origin_features, symbol_set_features])
 
     mlb = MultiLabelBinarizer(classes=sorted(CIPHER_TYPE_LABELS.keys()))
     y = mlb.fit_transform(df['cipher_type_codes'])
@@ -95,7 +83,6 @@ def load_dataset(csv_path):
         'numeric_columns': numeric_columns,
         'numeric_medians': numeric_medians,
         'origin_encoder': origin_encoder,
-        'lang_binarizer': lang_binarizer,
         'symbol_set_binarizer': symbol_set_binarizer,
     }
 
@@ -129,9 +116,12 @@ def main():
 
 #Build a single document's feature vector the same way load_dataset does, using its fitted encoders.
 #stats holds the character-repartition values (total_symbols, alphabet_size, coincidence_index,
-#start_year, freq_*); origin/plaintext_lang/symbol_sets are all optional and default to their
-#facultative encoding (median, 'unknown' origin, no language/symbol-set token) when None
-def build_feature_row(stats, encoders, origin=None, plaintext_lang=None, symbol_sets=None):
+#start_year, freq_*); coincidence_index is the difference between the document's actual index of
+#coincidence and the expected index for its stated plaintext_lang(s), and is None/NaN (imputed to the
+#median like every other numeric column) when plaintext_lang names no recognized language.
+#origin/symbol_sets are both optional and default to their facultative encoding
+#('unknown' origin, no symbol-set token) when None
+def build_feature_row(stats, encoders, origin=None, symbol_sets=None):
     numeric_medians = encoders['numeric_medians']
     numeric_values = [
         stats[column] if stats.get(column) is not None else numeric_medians[column]
@@ -141,10 +131,9 @@ def build_feature_row(stats, encoders, origin=None, plaintext_lang=None, symbol_
     origin_value = pd.DataFrame([[origin if origin is not None else 'unknown']], columns=['origin'])
     origin_features = encoders['origin_encoder'].transform(origin_value).toarray()[0]
 
-    lang_features = encoders['lang_binarizer'].transform([parse_plaintext_lang(plaintext_lang)])[0]
     symbol_set_features = encoders['symbol_set_binarizer'].transform([split_codes(symbol_sets)])[0]
 
-    return np.concatenate([numeric_values, origin_features, lang_features, symbol_set_features])
+    return np.concatenate([numeric_values, origin_features, symbol_set_features])
 
 
 #Predict the cipher type(s) of a single document from its statistics row (same feature order
