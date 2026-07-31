@@ -13,11 +13,10 @@ BASE = 'https://de-crypt.org/decrypt-web'
 
 ALLOWED_PLAINTEXT_LANGS = {'french', 'portuguese', 'german', 'spanish', 'latin', 'italian', 'english'}
 
+#None plaintext lang is allowed to train the model on absence of data also
 def is_allowed_plaintext_lang(plaintext_lang):
     # plaintext_lang can list several languages (e.g. "French? Portuguese?"),
     # possibly separated by commas/spaces and marked uncertain with "?"
-    if not plaintext_lang:
-        return False
     langs = re.findall(r'[A-Za-z]+', plaintext_lang)
     if not langs:
         return False
