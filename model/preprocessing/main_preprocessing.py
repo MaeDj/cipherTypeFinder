@@ -6,17 +6,19 @@
 
 import os
 
-#1) Binarization process
-os.system("python3 ./binarize.py")
 
-#2) Line segmentation process
-os.system("python3 ./line_segmentation.py")
+def main_prepro():
+    #1) Binarization process
+    os.system("python3 ./binarize.py")
 
-#3) Cleaning process
-os.system("python3 ./cleaning.py")
+    #2) Line segmentation process
+    os.system("python3 ./line_segmentation.py")
 
-#4) Connected Component process
-os.system("python3 ./connected_component.py")
+    #3) Cleaning process
+    os.system("python3 ./cleaning.py")
 
-#5) Processing for Clustering process
-os.system("python3 ./processing_for_clustering.py")
+    #4) Connected Component process
+    os.system("python3 ./connected_component.py")
+
+    #5) Processing for Clustering process
+    os.system("python3 ./processing_for_clustering.py")
