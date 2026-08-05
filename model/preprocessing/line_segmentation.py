@@ -1,21 +1,22 @@
 import os
+import sys
+from pathlib import Path
 from natsort import natsorted
 import cv2
 import peakutils
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from model.utils.remote_listdir import listdir as remote_listdir
+from model.utils.binarization_method import resolve_binarization_method
+
 #Initial setup
 
-DATASET_PATH = f'../corpus'
+DATASET_PATH = os.path.expanduser('~/Caramba/Dataset/corpus_cipherTypeFinder_Caramba')
 
-binarization_methods = ["otsu","gauss","adaptive","niblack","sauvola","local"]
-
-bina_method = False
-while (bina_method not in ["","1","2","3","4","5", "6"]):
-    bina_method = input("Select the binarization method that you used: [Default:5] (1:Otsu 2:Gaussian 3:Adaptive 4:Niblack 5:Sauvola 6:Local) \n")
-if bina_method == "":
-    bina_method = "5"
-bina_method = binarization_methods[int(bina_method)-1]
+#Method forwarded as argv[1] when launched by main_preprocessing.py; falls back to an
+#interactive prompt when run standalone.
+bina_method = resolve_binarization_method(sys.argv[1] if len(sys.argv) > 1 else None)
 
 input_folder =f"{DATASET_PATH}/preprocessing/binarized/{bina_method}"
 output_folder =f"{DATASET_PATH}/preprocessing/line_segmented/{bina_method}"
@@ -112,7 +113,7 @@ def saveSegmentedLines(image, symbols, peaks, output_folder, filename, minDistLi
 minDistLineSeg = 50 
 thresLineSeg = 0.2
 
-for filename in natsorted(os.listdir(input_folder)):
+for filename in natsorted(remote_listdir(input_folder)):
     if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
         #Load Image
         img_path = os.path.join(input_folder, filename)

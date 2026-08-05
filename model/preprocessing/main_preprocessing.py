@@ -4,21 +4,33 @@
 #Cross-Manuscript Comparison in Historical Cryptanalysis" from Alejandra Reinares, Giuseppe De Gregorio and Alicia Fornés
 ###
 
-import os
+import subprocess
+import sys
+from pathlib import Path
+
+#Anchored to this file's own directory, not the caller's cwd (main.py never
+#chdir's into preprocessing/ before calling main_prepro())
+SCRIPT_DIR = Path(__file__).resolve().parent
 
 
-def main_prepro():
+def _run_stage(script_name, binarization_method):
+    #check=True: raise instead of silently continuing on a failed stage
+    #binarization_method forwarded as a plain CLI arg so the stage doesn't prompt for it
+    subprocess.run([sys.executable, str(SCRIPT_DIR / script_name), binarization_method], check=True)
+
+
+def main_prepro(binarization_method):
     #1) Binarization process
-    os.system("python3 ./binarize.py")
+    _run_stage("binarize.py", binarization_method)
 
     #2) Line segmentation process
-    os.system("python3 ./line_segmentation.py")
+    _run_stage("line_segmentation.py", binarization_method)
 
     #3) Cleaning process
-    os.system("python3 ./cleaning.py")
+    _run_stage("cleaning.py", binarization_method)
 
     #4) Connected Component process
-    os.system("python3 ./connected_component.py")
+    _run_stage("connected_component.py", binarization_method)
 
     #5) Processing for Clustering process
-    os.system("python3 ./processing_for_clustering.py")
+    _run_stage("processing_for_clustering.py", binarization_method)

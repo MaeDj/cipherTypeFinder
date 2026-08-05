@@ -3,6 +3,7 @@
 #character-repartition statistics computed by ../statistics/equivalent_txt_manuscripts_stats.py
 #Reference: https://scikit-learn.org/stable/modules/neural_networks_supervised.html
 ###
+import os
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
@@ -15,7 +16,10 @@ from sklearn.metrics import classification_report, hamming_loss, jaccard_score, 
 #BODY
 ###
 
-INPUT_PATH = '../corpus/computable/statistics'
+#dataset folder root - absolute path on the data host, so it resolves the
+#same regardless of the process cwd
+DATASET_PATH = os.path.expanduser('~/Caramba/Dataset/corpus_cipherTypeFinder_Caramba')
+INPUT_PATH = f'{DATASET_PATH}/computable/statistics'
 INPUT_CSV = f'{INPUT_PATH}/manuscripts_stats.csv'
 
 #cipher_types codes come from ../corpus_builder/fetch_data.py (code 6 is already excluded at fetch time)
@@ -143,4 +147,5 @@ def predict_cipher_types(model, label_names, feature_row, threshold=0.5):
     return [name for name, probability in zip(label_names, probabilities) if probability >= threshold]
 
 
-main()
+if __name__ == "__main__":
+    main()

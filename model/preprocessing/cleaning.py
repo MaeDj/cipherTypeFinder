@@ -2,20 +2,21 @@ import cv2
 import numpy as np
 from sklearn.linear_model import LinearRegression
 import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from model.utils.remote_listdir import listdir as remote_listdir
+from model.utils.binarization_method import resolve_binarization_method
 
 
 #Initial setup
 
-DATASET_PATH = f'../corpus'
+DATASET_PATH = os.path.expanduser('~/Caramba/Dataset/corpus_cipherTypeFinder_Caramba')
 
-binarization_methods = ["otsu","gauss","adaptive","niblack","sauvola","local"]
-bina_method = False
-while (bina_method not in ["","1","2","3","4","5", "6"]):
-	bina_method = input("Select the binarization method that was used: [Default:5] (1:Otsu 2:Gaussian 3:Adaptive 4:Niblack 5:Sauvola 6:Local) \n")
-if bina_method == "":
-	bina_method = "5"
-
-bina_method = binarization_methods[int(bina_method)-1]
+#Method forwarded as argv[1] when launched by main_preprocessing.py; falls back to an
+#interactive prompt when run standalone.
+bina_method = resolve_binarization_method(sys.argv[1] if len(sys.argv) > 1 else None)
 
 
 input_folder = f"{DATASET_PATH}/preprocessing/line_segmented/{bina_method}"
@@ -81,7 +82,7 @@ def connected_components_with_stats(binary_image, connectivity=4):
 
     return current_label, labels, np.array(stats, dtype=np.int32), np.array(centroids, dtype=np.float32)
 
-for image in os.listdir(input_folder):
+for image in remote_listdir(input_folder):
     if image.lower().endswith(('.png', '.jpg', '.jpeg')):
         #Load and preprocess the image
         binary_image = cv2.imread(os.path.join(input_folder, image), cv2.IMREAD_GRAYSCALE)

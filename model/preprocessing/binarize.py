@@ -1,27 +1,27 @@
 import cv2
 import os
 import random
+import sys
+from pathlib import Path
 from skimage.filters import threshold_niblack,threshold_sauvola
 import numpy as np
 from natsort import natsorted
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from model.utils.remote_listdir import listdir as remote_listdir
+from model.utils.binarization_method import resolve_binarization_method
+
 random.seed(0)
 
 #Initial setup
-DATASET_PATH = f'/media/mae/PHILIPS UFD/corpus_cipherTypeFinder_Caramba'
+DATASET_PATH = os.path.expanduser('~/Caramba/Dataset/corpus_cipherTypeFinder_Caramba')
 
-
-binarization_methods = ["otsu","gauss","adaptive","niblack","sauvola","local"]
-METHOD = False
-while (METHOD not in ["","1","2","3","4","5", "6"]):
-	METHOD = input("Select the binarization method that you want to apply: [Default:5] (1:Otsu 2:Gaussian 3:Adaptive 4:Niblack 5:Sauvola 6:Local) \n")
-if METHOD == "":
-	METHOD = "5"
-
-METHOD = binarization_methods[int(METHOD)-1]
+#Method forwarded as argv[1] when launched by main_preprocessing.py; falls back to an
+#interactive prompt when run standalone (python3 ./binarize.py).
+METHOD = resolve_binarization_method(sys.argv[1] if len(sys.argv) > 1 else None)
 
 input_folder = f'{DATASET_PATH}/original_corpus/img'
-output_folder =f"../corpus/preprocessing/binarized/{METHOD}"
+output_folder =f"{DATASET_PATH}/preprocessing/binarized/{METHOD}"
 
 def binarize(im,method):
 	if "otsu" in method:
@@ -132,7 +132,7 @@ def rescale(r,maxvalue=255):
 	return maxvalue*(r-mi)/(r.max()-mi)
 
 def start_binarization(method, input_path, output_path):
-	for filename in natsorted(os.listdir(input_path), key = lambda x: x.lower()):
+	for filename in natsorted(remote_listdir(input_path), key = lambda x: x.lower()):
 		im = cv2.imread(os.path.join(input_path,filename),0)
 		bina = binarize(im,method)
 		cv2.imwrite(os.path.join(output_path,filename),bina)
@@ -141,7 +141,7 @@ def start_binarization(method, input_path, output_path):
 
 os.makedirs(output_folder, exist_ok=True)
 
-images_list = os.listdir(input_folder)
+images_list = remote_listdir(input_folder)
 
 for image in images_list:
     image_path = os.path.join(input_folder, image)

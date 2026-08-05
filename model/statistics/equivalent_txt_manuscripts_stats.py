@@ -6,10 +6,16 @@ import os
 import re
 import csv
 import json
+import sys
+from pathlib import Path
 
-ORIGINAL_DATASET_METADATA_PATH='/media/mae/PHILIPS UFD/corpus_cipherTypeFinder_Caramba/original_corpus/metadata'
-#dataset folder root
-DATASET_PATH = '../corpus'
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from model.utils.remote_listdir import listdir as remote_listdir
+
+#dataset folder root - absolute path on the data host, so it resolves the
+#same regardless of the process cwd
+DATASET_PATH = os.path.expanduser('~/Caramba/Dataset/corpus_cipherTypeFinder_Caramba')
+ORIGINAL_DATASET_METADATA_PATH=f'{DATASET_PATH}/original_corpus/metadata'
 #input directory, written by ../txt_equivalent_builder/txtBuilder.py
 INPUT_DIRECTORY = f"{DATASET_PATH}/computable/text"
 #output directory for the statistics .csv
@@ -91,7 +97,7 @@ def read_metadata(doc):
 #Find every document id from the .txt files available into the input directory
 def doc_id():
     docId_list = []
-    for filename in os.listdir(INPUT_DIRECTORY):
+    for filename in remote_listdir(INPUT_DIRECTORY):
         match = re.match(r'(.+)\.txt$', filename.lower())
         if match:
             docId_list.append(match.group(1))
@@ -141,4 +147,5 @@ def main():
 
     #directly written into ../corpus/computable/statistics/manuscripts_stats.csv
 
-main()
+if __name__ == "__main__":
+    main()

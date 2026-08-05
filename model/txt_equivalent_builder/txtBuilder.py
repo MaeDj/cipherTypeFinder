@@ -6,32 +6,31 @@
 import os
 import re
 import csv
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from model.utils.remote_listdir import listdir as remote_listdir
 
 
 LATENT_DIM = 64
 
-#dataset folder root
-DATASET_PATH=f'../corpus'
+#dataset folder root - absolute path on the data host, so it resolves the
+#same regardless of the process cwd (main.py imports this module without
+#chdir'ing into txt_equivalent_builder/)
+DATASET_PATH=os.path.expanduser('~/Caramba/Dataset/corpus_cipherTypeFinder_Caramba')
 
-binarization_methods = ["otsu","gauss","adaptive","niblack","sauvola","local"]
-METHOD = False
-while (METHOD not in ["","1","2","3","4","5", "6"]):
-	METHOD = input("Select the binarization method name used into the data folder you want to explore \n")
-if METHOD == "":
-	METHOD = "5"
-
-METHOD = binarization_methods[int(METHOD)-1]
 #output directory of ../Convolutional_autoEncoder/hierarchical_silhouette_bucle.py
 INPUT_DIRECTORY=f"{DATASET_PATH}/clustering/hierarchical/clusters_{str(LATENT_DIM)}_silhouette_results/Merged"
 OUTPUT_DIRECTORY=f"{DATASET_PATH}/computable"
-ORIGINAL_DIRECTORY=f"../corpus/preprocessing/binarized/{METHOD}"
+ORIGINAL_DIRECTORY=f'{DATASET_PATH}/original_corpus/img'
 
 
 #Finding all document id
 
 def doc_id():
     docId_list=[]
-    for filename in os.listdir(ORIGINAL_DIRECTORY):
+    for filename in remote_listdir(ORIGINAL_DIRECTORY):
         if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
             match = re.match(r'(\d+)\.(jpg|jpeg|png)$', filename.lower())
             if match:
@@ -44,7 +43,7 @@ def organizing_char_list(docId_list):
     dict_doc_charList=dict()
     for doc in docId_list:
         dict_char_info = dict()
-        for cluster in os.listdir(os.path.join(INPUT_DIRECTORY,'Accepted')):
+        for cluster in remote_listdir(os.path.join(INPUT_DIRECTORY,'Accepted')):
             cluster_match = re.match(r'^Cluster_(.+)_Size(\d+)$', cluster)
             if cluster_match:
                 cluster_label = cluster_match.group(1)
@@ -53,7 +52,7 @@ def organizing_char_list(docId_list):
                 print("Verify cluster folder name")
                 continue
             cluster_path = os.path.join(INPUT_DIRECTORY,'Accepted',cluster)
-            for char in os.listdir(cluster_path):
+            for char in remote_listdir(cluster_path):
                 match = re.match(r'^symbol_(.+)_(\d+)\.(jpg|jpeg|png)$', char)
                 if match:
                     filename, global_counter = match.group(1), int(match.group(2))
@@ -122,7 +121,8 @@ def main():
 
     #directly written into the folder ../corpus/computable/csv and ../corpus/computable/text
 
-main()
+if __name__ == "__main__":
+    main()
 
 
 

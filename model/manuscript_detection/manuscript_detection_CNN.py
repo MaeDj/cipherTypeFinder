@@ -2,6 +2,8 @@
 # Encode the CNN build to distinguish manuscript from random images
 ###
 import os
+import sys
+from pathlib import Path
 import csv
 import json
 import cv2
@@ -12,7 +14,12 @@ from tensorflow.keras import models
 import keras
 from keras.layers import *
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from model.utils.remote_listdir import listdir as remote_listdir
 
+#dataset folder root - absolute path on the data host, so it resolves the
+#same regardless of the process cwd
+DATASET_PATH = os.path.expanduser('~/Caramba/Dataset/corpus_cipherTypeFinder_Caramba')
 
 ###
 #BODY
@@ -29,7 +36,7 @@ def load_custom_dataset(images_dir, labels_dir, img_size=IMG_SIZE):
     labels = []
 
     # Sort so images and labels line up consistently
-    image_files = sorted(os.listdir(images_dir))
+    image_files = sorted(remote_listdir(images_dir))
 
     for fname in image_files:
         name, ext = os.path.splitext(fname)
@@ -56,7 +63,7 @@ def load_custom_dataset(images_dir, labels_dir, img_size=IMG_SIZE):
 
 
 # Load everything, then split into train/test
-x_all, y_all = load_custom_dataset("../corpus/corpus_manuscript_random/images", "../corpus/corpus_manuscript_random/labels")
+x_all, y_all = load_custom_dataset(f"{DATASET_PATH}/corpus_manuscript_random/images", f"{DATASET_PATH}/corpus_manuscript_random/labels")
 
 train_images, test_images, train_labels, test_labels = train_test_split(
     x_all, y_all, test_size=0.2, random_state=42, stratify=y_all
@@ -111,7 +118,7 @@ print(test_acc)
 REJECTED_LOG_PATH = "rejected_documents.csv"
 
 # Every document validated as manuscript is copied here for later review
-VALIDATED_IMAGES_DIR = "../corpus/validated_documents"
+VALIDATED_IMAGES_DIR = f"{DATASET_PATH}/validated_documents"
 
 
 def log_rejected_document(image_path, probability):
