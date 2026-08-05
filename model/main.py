@@ -8,6 +8,7 @@ from statistics import equivalent_txt_manuscripts_stats
 from text_clusterization import MLP_cipher_classifier
 from convolutional_autoEncoder import hierarchical_silhouette_bucle
 from utils.binarization_method import resolve_binarization_method
+from utils.progress import stage
 
 ###
 #Manuscript detection training
@@ -17,32 +18,40 @@ from utils.binarization_method import resolve_binarization_method
 #of prompting for it itself.
 BINARIZATION_METHOD = resolve_binarization_method()
 
-###
-#Preprocessing
-###
+with stage("FULL PIPELINE"):
 
-#All files from the corpus are preprocessed and stored into ./corpus folder
-main_preprocessing.main_prepro(BINARIZATION_METHOD)
+    ###
+    #Preprocessing
+    ###
+
+    #All files from the corpus are preprocessed and stored into ./corpus folder
+    with stage("1/5 Preprocessing (binarize -> line segment -> clean -> connected components -> resize)"):
+        main_preprocessing.main_prepro(BINARIZATION_METHOD)
 
 
-###
-# Characters are clusterized
-###
+    ###
+    # Characters are clusterized
+    ###
 
-hierarchical_silhouette_bucle.main()
-###
-#TXT equivalent to original manuscript creation
-###
-txtBuilder.main()
+    with stage("2/5 Character clustering (autoencoder + hierarchical silhouette)"):
+        hierarchical_silhouette_bucle.main()
 
-###
-#Statistics computation
-###
-equivalent_txt_manuscripts_stats.main()
+    ###
+    #TXT equivalent to original manuscript creation
+    ###
+    with stage("3/5 Computable .txt equivalent creation"):
+        txtBuilder.main()
 
-###
-#Manuscript clusterization and final results
-###
+    ###
+    #Statistics computation
+    ###
+    with stage("4/5 Manuscript statistics computation"):
+        equivalent_txt_manuscripts_stats.main()
 
-model, label_names, encoders=MLP_cipher_classifier.main()
+    ###
+    #Manuscript clusterization and final results
+    ###
+
+    with stage("5/5 Cipher-type MLP training"):
+        model, label_names, encoders = MLP_cipher_classifier.main()
 

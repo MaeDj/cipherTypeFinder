@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from model.utils.remote_listdir import listdir as remote_listdir
 from model.utils.binarization_method import resolve_binarization_method
+from model.utils.progress import progress
 
 #Initial setup
 DATASET_PATH = os.path.expanduser('~/Caramba/Dataset/corpus_cipherTypeFinder_Caramba')
@@ -85,7 +86,10 @@ def connected_components_with_stats(binary_image, connectivity=4):
 #Tracking total num of characters across all files
 global_counter = 0
 
-for filename in remote_listdir(input_folder):
+file_list = remote_listdir(input_folder)
+print(f"[connected_component:{bina_method}] {len(file_list)} documents to scan", flush=True)
+
+for filename in progress(file_list, label=f"connected_component:{bina_method}"):
     if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
         image_path = os.path.join(input_folder, filename)
         binary_image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
@@ -163,3 +167,9 @@ for filename in remote_listdir(input_folder):
         #Save visualization with bounding boxes
         boxes_filename = os.path.join(boxes_folder, f"boxes_{filename}")
         cv2.imwrite(boxes_filename, boxes_image)
+
+#This is the character-crop count that drives the next stage's autoencoder batch count and,
+#more importantly, the O(n^2) silhouette_score search in hierarchical_silhouette_bucle.py -
+#worth watching for: tens of thousands is fine, well past ~50-80K gets slow/memory-heavy.
+print(f"[connected_component:{bina_method}] done - extracted {global_counter} character crops "
+      f"from {len(file_list)} documents", flush=True)

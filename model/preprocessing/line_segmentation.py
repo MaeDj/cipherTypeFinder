@@ -9,6 +9,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from model.utils.remote_listdir import listdir as remote_listdir
 from model.utils.binarization_method import resolve_binarization_method
+from model.utils.progress import progress
 
 #Initial setup
 
@@ -113,7 +114,10 @@ def saveSegmentedLines(image, symbols, peaks, output_folder, filename, minDistLi
 minDistLineSeg = 50 
 thresLineSeg = 0.2
 
-for filename in natsorted(remote_listdir(input_folder)):
+file_list = natsorted(remote_listdir(input_folder))
+print(f"[line_segmentation:{bina_method}] {len(file_list)} files to scan", flush=True)
+
+for filename in progress(file_list, label=f"line_segmentation:{bina_method}"):
     if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
         #Load Image
         img_path = os.path.join(input_folder, filename)

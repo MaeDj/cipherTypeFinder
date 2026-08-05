@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from model.utils.remote_listdir import listdir as remote_listdir
 from model.utils.binarization_method import resolve_binarization_method
+from model.utils.progress import progress
 
 
 #Initial setup
@@ -82,7 +83,10 @@ def connected_components_with_stats(binary_image, connectivity=4):
 
     return current_label, labels, np.array(stats, dtype=np.int32), np.array(centroids, dtype=np.float32)
 
-for image in remote_listdir(input_folder):
+file_list = remote_listdir(input_folder)
+print(f"[cleaning:{bina_method}] {len(file_list)} files to scan", flush=True)
+
+for image in progress(file_list, label=f"cleaning:{bina_method}"):
     if image.lower().endswith(('.png', '.jpg', '.jpeg')):
         #Load and preprocess the image
         binary_image = cv2.imread(os.path.join(input_folder, image), cv2.IMREAD_GRAYSCALE)

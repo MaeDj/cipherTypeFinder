@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from model.utils.binarization_method import resolve_binarization_method
+from model.utils.progress import progress
 
 #Initial setup
 
@@ -42,7 +43,7 @@ def preprocess_images_simple(image_folder, target_size=(100, 100)):
     processed_images = []
     image_filenames = []
     
-    for img_path in image_paths:
+    for img_path in progress(image_paths, label="resize_for_clustering"):
         #Read image
         img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
         if img is None:

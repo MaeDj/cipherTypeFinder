@@ -10,6 +10,7 @@ from natsort import natsorted
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from model.utils.remote_listdir import listdir as remote_listdir
 from model.utils.binarization_method import resolve_binarization_method
+from model.utils.progress import progress
 
 random.seed(0)
 
@@ -142,13 +143,14 @@ def start_binarization(method, input_path, output_path):
 os.makedirs(output_folder, exist_ok=True)
 
 images_list = remote_listdir(input_folder)
+print(f"[binarize:{METHOD}] {len(images_list)} images to process", flush=True)
 
-for image in images_list:
+for image in progress(images_list, label=f"binarize:{METHOD}"):
     image_path = os.path.join(input_folder, image)
 
     #Load image in grayscale
     gray_image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-	
+
     binary_image = binarize(gray_image, METHOD)
 
     #Save or display the binarized image
