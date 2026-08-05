@@ -19,6 +19,22 @@ The aim of this program is to get from a raw photo of a (supposedly) ciphered ma
 
 ---
 
+## Running the Pipeline & Server Notes
+
+`model/main.py` is the single entry point (`cd model && python3 main.py`) and runs every stage below in order, in-process. Since it's routinely run on a different machine than it's developed on (typically `biscotte`, the Caramba lab server holding the corpus), a few things are handled specifically so paths and subprocess calls stay correct regardless of which host or working directory it's launched from:
+
+- **Dataset location is a single absolute path, not a repo-relative one.** Every stage resolves its data through the same constant, expanded once per script: `DATASET_PATH = os.path.expanduser('~/Caramba/Dataset/corpus_cipherTypeFinder_Caramba')`.  — `main.py` imports every stage module up front, so a cwd-relative path would resolve differently (or to nothing) depending on where `python3 main.py` was launched from. Every generated artifact (binarized images, line/character crops, clustering results, computable `.txt`/`.csv`, statistics) is written under this same tree — `<DATASET_PATH>/preprocessing/...`, `<DATASET_PATH>/clustering/...`, `<DATASET_PATH>/computable/...` — alongside the raw `original_corpus/{img,metadata}` it reads from. It's kept outside the git repo (multi-GB of images/generated data); whichever host runs the pipeline needs this directory populated at that exact path, or the constant updated to match.
+
+- **Local-first, SFTP-fallback directory listing** (`model/utils/remote_listdir.py`). `remote_listdir.listdir()` stands in for `os.listdir()` everywhere in the pipeline. It checks the local filesystem first and only falls back to SFTP if the path genuinely isn't reachable locally — so running directly on the machine that holds `DATASET_PATH` (e.g. on `biscotte` itself) needs no SFTP configuration at all. Running from elsewhere (e.g. a laptop without the corpus) falls back to an SFTP connection, configured through a `.env` file at the **project root** (`CipherTypeFinder/.env`, one level above `model/`) holding `SFTP_HOST`, `SFTP_PORT`, `SFTP_USERNAME`, `SFTP_PASSWORD`. `.env` is git-ignored, so it has to be created by hand on every machine that needs the SFTP path.
+
+- **One binarization-method prompt for the whole run**, not one per stage. `main.py` asks once at the very start (`resolve_binarization_method()`, `model/utils/binarization_method.py`) and forwards the chosen method to every stage that needs it, as a plain CLI argument to the `preprocessing/` scripts (each launched as its own subprocess by `main_preprocessing.py`). Each of those scripts still falls back to its own interactive prompt if run standalone (e.g. `python3 ./binarize.py` with no argument) — the prompt/default logic itself lives once in `binarization_method.py` rather than being duplicated per file.
+
+- **Portable subprocess launching** (`main_preprocessing.py`). Preprocessing stages 1–5 each run as a subprocess (`subprocess.run([sys.executable, ...], check=True)`). Two details make this work regardless of host/cwd: scripts are launched by their absolute path (`Path(__file__).resolve().parent / "<script>.py"`, anchored to the launcher's own location) rather than `./<script>.py`; and `sys.executable` is used instead of a hardcoded `python3`, so each stage runs under the same interpreter/virtualenv as `main.py` itself (relevant on servers where a bare `python3` on `PATH` may not be the intended environment, e.g. `envCipherTypeFinder`). `check=True` also means a failing stage now raises instead of being silently swallowed.
+
+- **Import-safe stage modules.** `txtBuilder.py`, `equivalent_txt_manuscripts_stats.py`, `MLP_cipher_classifier.py` and `hierarchical_silhouette_bucle.py` each guard their execution with `if __name__ == "__main__": main()`. `main.py` imports all of them up front; without the guard, each one's full pipeline (and any early `exit()`/`return` on missing input) would fire during import — before earlier stages had produced the output they depend on — rather than when `main.py` actually calls them in sequence.
+
+---
+
 ## User-Provided Document Info (`model/user_interface`)
 
 Before (or alongside) the automated pipeline, `user_caller.py` lets a user attach expert knowledge about their own document that cannot be inferred from the image alone:
@@ -40,7 +56,7 @@ Origin, date and plaintext language are no longer hardcoded gaps, they are now u
 
 This is the **gatekeeper of the whole pipeline**: before any preprocessing, clustering, or cipher-type analysis happens, a binary CNN (`manuscript_detection_CNN.py`) decides whether a raw input image actually looks like a manuscript at all. Any image a user submits that is **not** manuscript-like is rejected here and never reaches the rest of the pipeline — it does not get routed into the "Not encrypted / not a manuscript" cipher-type class from step 5, which only applies to manuscripts that passed this gate but turned out to be unciphered/unreadable.
 
-1. **Dataset loading** (`load_custom_dataset`) — reads a corpus of manuscript vs. random images (`../corpus/corpus_manuscript_random/{images,labels}`, not yet built), resizing every image to the same fixed 100×100 canvas used by the rest of the project (see `model/preprocessing/processing_for_clustering.py`), and split 80/20 into train/test with `train_test_split`.
+1. **Dataset loading** (`load_custom_dataset`) — reads a corpus of manuscript vs. random images (`<DATASET_PATH>/corpus_manuscript_random/{images,labels}`, not yet built — see [Running the Pipeline & Server Notes](#running-the-pipeline--server-notes) for what `DATASET_PATH` resolves to), resizing every image to the same fixed 100×100 canvas used by the rest of the project (see `model/preprocessing/processing_for_clustering.py`), and split 80/20 into train/test with `train_test_split`.
 2. **Architecture** — a small stack of `Conv2D` + `MaxPooling2D` + `Dropout` blocks (32 → 64 → 64 → 128 filters) followed by a `Flatten` → `Dense(64, relu)` → `Dropout` → `Dense(1, sigmoid)` output, trained with binary cross-entropy / Adam.
 3. **Output** — a single probability that the input image is a manuscript; images falling below the decision threshold are rejected before entering the preprocessing stage below. Rejected images are logged to `rejected_documents.csv` (`log_rejected_document`) with their probability for later review, while validated images are copied into the `validated_documents/` folder (`save_validated_document`) via `cv2.imwrite`.
 
@@ -72,7 +88,7 @@ Implements the character-clustering approach described in *"Unsupervised Feature
 4. Searches for the optimal distance threshold for Agglomerative (ward-linkage) clustering by scanning a range of thresholds and keeping the one maximizing the silhouette score.
 5. Runs the final hierarchical clustering with that threshold, then classifies each resulting cluster by size (<5 members = too small) and by average intra-cluster distance (top 20% = too high-variance), and saves the outcome under two parallel folders for comparison:
    - **`Original/`** — the straightforward classification: too-small and too-high-variance clusters are set aside as "Rejected" (`Rejected_TooSmall`, `Rejected_HighVar`), while the rest are kept as "Accepted" clusters, each ideally corresponding to a single distinct character/glyph.
-   - **`Merged/`** — a lossless variant where no character is discarded: too-small clusters are kept as their own accepted cluster, and every character from a too-high-variance cluster is individually reassigned to whichever accepted cluster's centroid is closest, so all characters end up under a single `Accepted` folder.
+   - **`Merged/`** — a lossless variant where no character is discarded: too-small clusters are kept as their own accepted cluster, and every character from a too-high-variance cluster is individually reassigned to whichever accepted cluster's centroid is closest, so all characters end up under a single `Accepted` folder. (Necessary to build equivalent alphabet)
 
 ---
 
@@ -82,10 +98,10 @@ Once each character has been assigned to a cluster, each manuscript document is 
 
 `txtBuilder.py`:
 
-1. Prompts for the binarization method used upstream (defaults to Sauvola) and lists every document ID present in the corresponding original/binarized corpus folder.
+1. Lists every document ID present in the original corpus image folder (`<DATASET_PATH>/original_corpus/img`).
 2. For each document, walks the "Accepted" clusters produced by the character-clustering step and, by matching each character image's filename (`symbol_<doc>_<global_counter>`), links every character back to its document and cluster label, keeping the character's global position counter.
 3. Sorts each document's characters by that position counter to restore the original reading order.
-4. Writes, per document, a plain `.txt` file containing the space-separated sequence of cluster labels (`../corpus/computable/text/<doc>.txt`), plus a companion `.csv` recording each character's cluster label alongside its source image filename (`../corpus/computable/csv/<doc>.csv`) for traceability back to the glyph images.
+4. Writes, per document, a plain `.txt` file containing the space-separated sequence of cluster labels (`<DATASET_PATH>/computable/text/<doc>.txt`), plus a companion `.csv` recording each character's cluster label alongside its source image filename (`<DATASET_PATH>/computable/csv/<doc>.csv`) for traceability back to the glyph images.
 
 ---
 
@@ -95,12 +111,12 @@ Once the computable `.txt` equivalents exist, each document is run through a sta
 
 `equivalent_txt_manuscripts_stats.py`:
 
-1. Lists every document ID present in `../corpus/computable/text` and splits each document's `.txt` equivalent back into its ordered list of symbols.
+1. Lists every document ID present in `<DATASET_PATH>/computable/text` and splits each document's `.txt` equivalent back into its ordered list of symbols.
 2. For each document, computes:
    - **Alphabet size** — number of distinct symbols used in the document.
    - **Index of coincidence difference** (`coincidence_index`) — the document's actual index of coincidence (probability that two symbols drawn at random from the document are identical) minus the expected index of coincidence for its stated plaintext language(s) (`plaintext_lang`, tokenized to tolerate free text like `"French? Portuguese?"` and averaged across every recognized language listed). The reference values used for that expectation come from the `COINCIDENCE_INDEX_CORRESPONDENCE` constant, a `{language: expected_IC}` lookup table hardcoded with the published index of coincidence for each of the 7 plaintext languages supported by the corpus (French 0.0778, English 0.0667, Spanish 0.0770, Portuguese 0.0745, German 0.0762, Latin 0.0765, Italian 0.0738) — the same language set enforced upstream by `is_allowed_plaintext_lang` in `fetch_data.py`. `None`/empty when `plaintext_lang` names no recognized language (i.e. no key of `COINCIDENCE_INDEX_CORRESPONDENCE` matches), so the raw index alone can't be compared meaningfully.
    - **Symbol frequencies** — occurrence count and relative frequency of every symbol.
-3. Registers all documents into a single `.csv` (`../corpus/computable/statistics/manuscripts_stats.csv`): one row per document (`doc_id`, `total_symbols`, `alphabet_size`, `coincidence_index`), the DECODE metadata carried over from `fetch_data.py` (`origin`, `start_year`, `cipher_types`, `symbol_sets`), followed by one `freq_<symbol>` column per symbol found anywhere in the corpus (0 where a document doesn't use that symbol) — so every document row shares the same columns while metadata and index of coincidence are each stored only once per document. `plaintext_lang` itself is deliberately excluded from the `.csv`: it's only used internally to compute `coincidence_index`.
+3. Registers all documents into a single `.csv` (`<DATASET_PATH>/computable/statistics/manuscripts_stats.csv`): one row per document (`doc_id`, `total_symbols`, `alphabet_size`, `coincidence_index`), the DECODE metadata carried over from `fetch_data.py` (`origin`, `start_year`, `cipher_types`, `symbol_sets`), followed by one `freq_<symbol>` column per symbol found anywhere in the corpus (0 where a document doesn't use that symbol) — so every document row shares the same columns while metadata and index of coincidence are each stored only once per document. `plaintext_lang` itself is deliberately excluded from the `.csv`: it's only used internally to compute `coincidence_index`.
 
 ---
 
@@ -183,7 +199,7 @@ UPGRADE NOT ALREADY AVAILABLE:
 
 Each class outputs a **Probability P**. Multiple-class predictions can also be considered; experts will define a threshold to decide which predictions are acceptable.
 
-Note: this draft class list predates the DECODE `cipher_types` taxonomy actually used by the 5.1 baseline (Monoalphabetic/Homophonic/Machine/Polyalphabetic/Nomenclature/Polyphonic) — it should be reconciled with that taxonomy once the fusion model is built, rather than treated as a separate target label set.
+
 
 ---
 
@@ -194,3 +210,14 @@ Note: this draft class list predates the DECODE `cipher_types` taxonomy actually
 ## Data Acquisition
 
 Input ciphered documents (`.jpg`) come from the DECODE Records Database of the DE-CRYPT Project. `model/corpus_builder/fetch_data.py` logs into the DE-CRYPT API, lists eligible records — excluding cipher type `6` (undetermined) and any record whose `plaintext_lang` isn't confidently one of the currently supported languages (French, Portuguese, German, Spanish, Latin, Italian, English; see `is_allowed_plaintext_lang`) — and downloads their images and metadata (origin region/city, start year, cipher types, plaintext language, symbol sets) into a local corpus folder.
+
+## AI Usage Declaration
+
+This project was partially built using Claude Code (https://claude.ai).
+
+Please find below the list of tasks performed using AI:
+
+- Code verification (path and call unicity / compilation checks)
+- Server-specific issues (see Running the Pipeline & Server Notes)
+- Automation of repetitive implementation fixes (replacing incorrect structures / incorrect path calls)
+- Organization and standardization of the documentation (based on human instructions, structure, and reasoning)
