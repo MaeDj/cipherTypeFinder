@@ -10,6 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from model.utils.remote_listdir import listdir as remote_listdir
 from model.utils.binarization_method import resolve_binarization_method
 from model.utils.progress import progress
+from model.utils.parallel import parallel_map_unordered
+from model.utils.cleanup import cleanup_stage_output
 
 #Initial setup
 
@@ -45,7 +47,7 @@ def connectedComponentsToLines(image, peaks):  #Groups connected components base
     #Inside connectedComponentsToLines
     _, binary_img = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     output = cv2.connectedComponentsWithStats(binary_img, 4, cv2.CV_32S)
-    print(f"Found {output[0]} individual components in the image.")
+    print(f"Found {output[0]} individual components in the image.", flush=True)
     symbols = []
     
     for indCC in range(1, output[0]):
@@ -111,26 +113,44 @@ def saveSegmentedLines(image, symbols, peaks, output_folder, filename, minDistLi
     return lines_count
 
 #Parameters (Adjust based on specific cipher images)
-minDistLineSeg = 50 
+minDistLineSeg = 50
 thresLineSeg = 0.2
 
-file_list = natsorted(remote_listdir(input_folder))
-print(f"[line_segmentation:{bina_method}] {len(file_list)} files to scan", flush=True)
 
-for filename in progress(file_list, label=f"line_segmentation:{bina_method}"):
-    if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-        #Load Image
-        img_path = os.path.join(input_folder, filename)
-        image = cv2.imread(img_path, 0)
-        
-        if image is None:
-            continue
+def _process_one(filename):
+    """Segment a single page into lines. Runs in a worker process - relies only on module-level
+    globals (input_folder/output_folder/minDistLineSeg/thresLineSeg) already set before the pool
+    starts, which the default fork start method on Linux hands to every worker for free."""
+    if not filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+        return 0
 
-        #Get line peaks via horizontal projection
-        peaks, line_avg_dist = projectionLines(image, minDistLineSeg, thresLineSeg)
-        
-        #Get connected components and assign them to line indices
-        symbols_grouped = connectedComponentsToLines(image, peaks)
-        
-        #Save the reconstructed lines
-        num_saved = saveSegmentedLines(image, symbols_grouped, peaks, output_folder, filename, minDistLineSeg)
+    #Load Image
+    img_path = os.path.join(input_folder, filename)
+    image = cv2.imread(img_path, 0)
+
+    if image is None:
+        return 0
+
+    #Get line peaks via horizontal projection
+    peaks, line_avg_dist = projectionLines(image, minDistLineSeg, thresLineSeg)
+
+    #Get connected components and assign them to line indices
+    symbols_grouped = connectedComponentsToLines(image, peaks)
+
+    #Save the reconstructed lines
+    return saveSegmentedLines(image, symbols_grouped, peaks, output_folder, filename, minDistLineSeg)
+
+
+if __name__ == "__main__":
+    file_list = natsorted(remote_listdir(input_folder))
+    print(f"[line_segmentation:{bina_method}] {len(file_list)} files to scan", flush=True)
+
+    #Every page is segmented independently of every other one, so this fans out across a
+    #process pool instead of one core handling the whole corpus alone (see model/utils/parallel.py).
+    for _filename, _num_saved in progress(parallel_map_unordered(_process_one, file_list),
+                                           total=len(file_list), label=f"line_segmentation:{bina_method}"):
+        pass
+
+    #Nothing downstream ever reads the binarized pages again once they've been segmented into
+    #lines - reclaim the space now instead of letting every stage's output pile up on disk at once.
+    cleanup_stage_output(input_folder, "binarized pages")

@@ -58,7 +58,10 @@ def symbol_frequencies(symbols):
 
 #Index of coincidence: probability that two symbols drawn at random from the document are identical
 #Difference against the expected index of coincidence of the document's stated plaintext language(s):
-def coincidence_index_difference(lang,symbols):
+#`counts` can be passed in when the caller already computed it (register_statistics does, via
+#symbol_frequencies, to build the freq_* columns) so this doesn't redo an O(len(symbols)) pass per
+#document just to get the same counts a second time.
+def coincidence_index_difference(lang, symbols, counts=None):
     total = len(symbols)
     if total < 2:
         return 0
@@ -69,7 +72,8 @@ def coincidence_index_difference(lang,symbols):
         return None
     original_IC = sum(matched_ics) / len(matched_ics)
 
-    counts, _ = symbol_frequencies(symbols)
+    if counts is None:
+        counts, _ = symbol_frequencies(symbols)
     numerator = sum(count * (count - 1) for count in counts.values())
     return (numerator / (total * (total - 1))) - original_IC
 
@@ -119,11 +123,12 @@ def register_statistics(dict_doc_symbols):
         writer.writerow(['doc_id'] + METADATA_FIELDS + ['total_symbols', 'alphabet_size', 'coincidence_index'] + [f"freq_{symbol}" for symbol in corpus_alphabet])
 #WARNING: to use coincidence index, there need to also use plaintext language metadata.
         for doc, symbols in dict_doc_symbols.items():
-            _, frequencies = symbol_frequencies(symbols)
+            counts, frequencies = symbol_frequencies(symbols)
             metadata = read_metadata(doc)
 
             row = [doc] + [metadata[field] for field in METADATA_FIELDS]
-            row += [len(symbols), alphabet_size(symbols), coincidence_index_difference(metadata.get('plaintext_lang', ''),symbols)]
+            row += [len(symbols), alphabet_size(symbols),
+                    coincidence_index_difference(metadata.get('plaintext_lang', ''), symbols, counts)]
             row += [frequencies.get(symbol, 0) for symbol in corpus_alphabet]
             writer.writerow(row)
 

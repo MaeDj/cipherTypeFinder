@@ -1,3 +1,5 @@
+
+###Claude suggested helper###
 import os
 from pathlib import Path
 
@@ -14,6 +16,15 @@ _sftp = None
 def _get_sftp():
     global _ssh, _sftp
     if _sftp is None:
+        #Reached only when the requested path doesn't exist locally (see listdir below), so a
+        #missing var here means SFTP genuinely wasn't configured for this host - surface that
+        #plainly instead of a bare "KeyError: 'SFTP_HOST'" with no indication of what to fix.
+        missing = [var for var in ('SFTP_HOST', 'SFTP_USERNAME') if var not in os.environ]
+        if missing:
+            raise RuntimeError(
+                f"Path not found locally and SFTP isn't configured: missing {', '.join(missing)} "
+                f"in the environment/.env. Set them, or run on the host that holds the data."
+            )
         _ssh = paramiko.SSHClient()
         _ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         _ssh.connect(

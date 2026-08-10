@@ -33,6 +33,14 @@ The aim of this program is to get from a raw photo of a (supposedly) ciphered ma
 
 - **Import-safe stage modules.** `txtBuilder.py`, `equivalent_txt_manuscripts_stats.py`, `MLP_cipher_classifier.py` and `hierarchical_silhouette_bucle.py` each guard their execution with `if __name__ == "__main__": main()`. `main.py` imports all of them up front; without the guard, each one's full pipeline (and any early `exit()`/`return` on missing input) would fire during import — before earlier stages had produced the output they depend on — rather than when `main.py` actually calls them in sequence.
 
+- **Disk-safe, incremental writes for large outputs.** `processing_for_clustering.py` streams each resized character straight into a pre-allocated, memory-mapped `.npy` (`np.lib.format.open_memmap`) instead of accumulating every image in a Python list and writing one giant array at the very end — a disk-quota failure now surfaces immediately instead of after hours of processing with nothing saved. `hierarchical_silhouette_bucle.py` checks every `cv2.imwrite` return value (`_imwrite_checked`) and raises right away on failure, since `cv2.imwrite` fails silently (returns `False`, no exception) on a full disk — previously a quota limit hit while saving clustered crops would produce a truncated result set while the pipeline still reported success.
+
+- **Per-file resilience.** Every stage that reads an image from disk (`binarize.py`, `cleaning.py`, `connected_component.py`, `line_segmentation.py`, `processing_for_clustering.py`) now skips an unreadable/corrupt file with a logged warning instead of letting the whole stage crash on it — a single bad file out of hundreds of thousands no longer discards hours of prior progress on the rest of the corpus.
+
+- **Progressive disk cleanup between preprocessing stages** (`model/utils/cleanup.py`). Each of the five preprocessing stages writes its own full copy of the corpus to disk; by default nothing removed an earlier stage's output once the next stage had consumed it, so all five copies (raw-resolution binarized pages, line strips, cleaned lines, individual character crops, bounding-box visualizations) coexisted on disk at once. At full corpus scale that's enough to exceed a disk quota before the run finishes — this is what caused `processing_for_clustering.py`'s memmap flush to fail with `OSError: Disk quota exceeded` after already having successfully processed 100% of the characters. Now, once a stage finishes writing its own output, it deletes the previous stage's now-unneeded output (`line_segmentation.py` removes `binarized/`, `cleaning.py` removes `line_segmented/`, `connected_component.py` removes `cleaned/` and its own `bounding_boxes/` — the latter is a debug/QA artifact no stage ever reads back — and `processing_for_clustering.py` removes `connectedComponent/<method>/symbols/` only after `preprocessed_data.npy` and its filenames are safely persisted). `binarize.py` is untouched since its input is the original corpus, never deleted. A cleanup failure is logged and swallowed rather than failing an otherwise-successful stage. Set `CIPHERTYPEFINDER_KEEP_INTERMEDIATE=1` to keep every intermediate folder (e.g. to inspect one stage's output, or compare binarization methods side by side). (AI generated optimization process)
+
+- **Process-pool parallelism across files** (`model/utils/parallel.py`). `binarize.py`, `line_segmentation.py`, `cleaning.py`, `connected_component.py` and the read/resize step of `processing_for_clustering.py` each process hundreds to hundreds of thousands of files that are fully independent of one another; all five now fan out across a process pool (`os.cpu_count() - 1` workers by default) instead of one core handling the whole corpus sequentially, which is the main lever on a many-core server. Workers pin OpenCV to a single internal thread each (`cv2.setNumThreads(1)`) to avoid oversubscribing cores between process-level and cv2's own thread-level parallelism.(AI generated optimization process)
+
 ---
 
 ## User-Provided Document Info (`model/user_interface`)
@@ -70,7 +78,9 @@ Once an image is confirmed to be a manuscript, it goes through the preprocessing
 2. **Line segmentation** (`line_segmentation.py`) — computes a horizontal projection profile of the binarized page to detect text-line peaks, assigns each connected component to its nearest line, and reconstructs/saves each text line as its own image.
 3. **Cleaning** (`cleaning.py`) — fits a linear regression through the foreground pixels of each line to estimate its baseline/middle zone, then removes connected components that touch the top/bottom border without reaching that middle zone (page artifacts, bleed-through, noise) as well as components below a minimum area.
 4. **Connected component analysis** (`connected_component.py`) — extracts individual characters from each cleaned line via 8-connectivity connected components. Small components (diacritics, dots, accents) are merged into the nearest horizontally-aligned main glyph so composite characters stay intact. Each resulting character is saved as its own cropped image, with bounding-box visualizations kept for inspection.
-5. **Processing for clustering** (`processing_for_clustering.py`) — resizes every extracted character to a fixed 100×100 canvas (aspect-ratio preserved, white-padded) and stacks the whole set into a single `.npy` array, ready to feed the autoencoder.
+5. **Processing for clustering** (`processing_for_clustering.py`) — resizes every extracted character to a fixed 100×100 canvas (aspect-ratio preserved, white-padded) and streams it directly into a pre-allocated, memory-mapped `preprocessed_data.npy` (one write per image, not one big array assembled in memory and saved at the very end), with the matching filenames recorded separately in `preprocessed_filenames.json`, ready to feed the autoencoder.
+
+Connected-component extraction (`cleaning.py`, `connected_component.py`) runs on OpenCV's `cv2.connectedComponentsWithStats` rather than a hand-rolled Python flood fill — the same union-find algorithm running in C instead of a pixel-by-pixel Python loop, and the main lever available if this stage needs to run faster.
 
 This produces:
 - **Document characters**: individual character images
@@ -82,7 +92,7 @@ Implements the character-clustering approach described in *"Unsupervised Feature
 
 `hierarchical_silhouette_bucle.py`:
 
-1. Loads the 100×100 preprocessed character images produced by the preprocessing step.
+1. Loads the 100×100 preprocessed character array (`preprocessed_data.npy`) and its matching `preprocessed_filenames.json` produced by the preprocessing step, checking the two are the same length before proceeding (they're written as two separate files rather than one pickled unit, so a partial rerun of either could otherwise desync them silently).
 2. Trains a convolutional autoencoder (3-layer convolutional encoder down to a 64-dimensional latent vector, mirrored transposed-convolutional decoder) to reconstruct each character image (MSE loss, Adam optimizer).
 3. Extracts and L2-normalizes the latent vector of every character from the trained encoder — this is the character's feature representation.
 4. Searches for the optimal distance threshold for Agglomerative (ward-linkage) clustering by scanning a range of thresholds and keeping the one maximizing the silhouette score.
@@ -211,13 +221,17 @@ Each class outputs a **Probability P**. Multiple-class predictions can also be c
 
 Input ciphered documents (`.jpg`) come from the DECODE Records Database of the DE-CRYPT Project. `model/corpus_builder/fetch_data.py` logs into the DE-CRYPT API, lists eligible records — excluding cipher type `6` (undetermined) and any record whose `plaintext_lang` isn't confidently one of the currently supported languages (French, Portuguese, German, Spanish, Latin, Italian, English; see `is_allowed_plaintext_lang`) — and downloads their images and metadata (origin region/city, start year, cipher types, plaintext language, symbol sets) into a local corpus folder.
 
+A failed login is detected immediately (`login_resp.raise_for_status()` plus a shape check on the JWT payload) rather than silently turning into a garbage bearer token that only surfaces later as confusing errors. Fetching the (up to 200) pages of record listings tolerates a single bad page — a transient network error or malformed response is logged and skipped rather than discarding every record ID already collected from the pages before it.
+
 ## AI Usage Declaration
 
 This project was partially built using Claude Code (https://claude.ai).
 
 Please find below the list of tasks performed using AI:
 
-- Code verification (path and call unicity / compilation checks)
+- Code verification (path and call unicity / compilation checks) and optimization (Complexity reduction)
 - Server-specific issues (see Running the Pipeline & Server Notes)
 - Automation of repetitive implementation fixes (replacing incorrect structures / incorrect path calls)
+- Error-handling audit and hardening across the preprocessing pipeline and data-fetching script (unreadable-file skips, disk-quota-safe writes, narrowed/validated exception handling) — see Running the Pipeline & Server Notes
+- Connected-component extraction sped up by replacing a hand-rolled Python flood fill with OpenCV's built-in implementation
 - Organization and standardization of the documentation (based on human instructions, structure, and reasoning)

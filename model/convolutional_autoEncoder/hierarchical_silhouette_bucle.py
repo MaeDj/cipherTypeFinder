@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import time
 import numpy as np
 import cv2
@@ -28,8 +29,12 @@ EPOCHS = 100
 LATENT_DIM = 64   #Size of the feature vector
 LEARNING_RATE = 1e-3
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+USE_CUDA = DEVICE.type == "cuda"
 
 DATA_PATH = f"{DATASET_PATH}/preprocessing/processed/preprocessed_data.npy"
+#Filenames now live next to the array as plain JSON rather than pickled together with
+#it (see processing_for_clustering.py) -- keeps the array itself memory-mappable.
+FILENAMES_PATH = f"{DATASET_PATH}/preprocessing/processed/preprocessed_filenames.json"
 RESULTS_FOLDER = f"{DATASET_PATH}/clustering/hierarchical/clusters_{str(LATENT_DIM)}_silhouette_results"
 
 #DEFINE DEEP AUTOENCODER
@@ -71,6 +76,16 @@ class ConvAutoencoder(nn.Module):
         return reconstructed, latent
 
 
+def _imwrite_checked(path, img):
+    """cv2.imwrite fails silently (returns False, no exception) on disk-full/bad-path/unsupported
+    format - which would otherwise let a full disk quietly produce a truncated cluster output while
+    the pipeline still reports "Done!". This stage writes every character crop up to twice over
+    (once under Original/, once under Merged/), so it's exactly the kind of place a quota limit
+    gets hit; turn that into a loud, immediate failure instead of a silent one."""
+    if not cv2.imwrite(path, img):
+        raise OSError(f"Failed to write image to {path} (disk full? invalid path?)")
+
+
 def main():
     os.makedirs(RESULTS_FOLDER, exist_ok=True)
 
@@ -78,12 +93,22 @@ def main():
     with stage("Loading preprocessed character data"):
         print(f"Loading data from {DATA_PATH}...", flush=True)
         try:
-            data_dict = np.load(DATA_PATH, allow_pickle=True).item()
-            images = data_dict['data']
-            filenames = data_dict['filenames']
+            images = np.load(DATA_PATH)
+            with open(FILENAMES_PATH) as f:
+                filenames = json.load(f)
             print(f"Loaded {len(images)} images. Shape: {images.shape}", flush=True)
         except FileNotFoundError:
-            print("Error: preprocessed_data.npy not found. Run the preprocessing script first.", flush=True)
+            print("Error: preprocessed_data.npy or preprocessed_filenames.json not found. Run the preprocessing script first.", flush=True)
+            return
+
+        #The array and the filenames are now two separate files instead of one pickled unit
+        #(see processing_for_clustering.py) - if they were ever produced by different runs, or one
+        #got regenerated without the other, indices would silently line up with the wrong filename
+        #instead of raising. Every crop written below is keyed by this pairing, so catch it here.
+        if len(images) != len(filenames):
+            print(f"Error: {len(images)} images but {len(filenames)} filenames - "
+                  f"{DATA_PATH} and {FILENAMES_PATH} are out of sync. Re-run the preprocessing script.",
+                  flush=True)
             return
 
     filenames = np.array(filenames)
@@ -93,8 +118,10 @@ def main():
     X_tensor = torch.tensor(images, dtype=torch.float32).unsqueeze(1) / 255.0
 
     #Create DataLoader
+    #pin_memory + non_blocking .to() below let the host->device copy overlap with GPU compute
+    #on the previous batch instead of stalling on every transfer; a no-op on CPU-only runs.
     dataset = TensorDataset(X_tensor)
-    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, pin_memory=USE_CUDA)
 
     #TRAIN MODEL
     print(f"\nTraining Autoencoder on {DEVICE} - {EPOCHS} epochs, {len(dataloader)} batches/epoch...", flush=True)
@@ -108,7 +135,7 @@ def main():
     for epoch in range(EPOCHS):
         total_loss = 0
         for batch in dataloader:
-            img = batch[0].to(DEVICE)
+            img = batch[0].to(DEVICE, non_blocking=USE_CUDA)
 
             #Forward
             reconstructed, _ = model(img)
@@ -149,9 +176,9 @@ def main():
 
     with torch.no_grad():
         #Process the full dataset in order (no shuffle) to match filenames
-        full_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False)
+        full_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, pin_memory=USE_CUDA)
         for batch in full_loader:
-            img = batch[0].to(DEVICE)
+            img = batch[0].to(DEVICE, non_blocking=USE_CUDA)
             _, latent = model(img)
             features.append(latent.cpu().numpy())
 
@@ -258,7 +285,7 @@ def main():
 
         os.makedirs(path, exist_ok=True)
         for idx in indices:
-            cv2.imwrite(os.path.join(path, filenames[idx]), images[idx])
+            _imwrite_checked(os.path.join(path, filenames[idx]), images[idx])
     print(f"Original classification saved ({len(features)} crops) - "
           f"took {format_duration(time.monotonic() - original_save_start)}", flush=True)
 
@@ -285,27 +312,44 @@ def main():
         path = os.path.join(MERGED_FOLDER, "Accepted", f"Cluster_{label}_Size{size}")
         os.makedirs(path, exist_ok=True)
         for idx in indices:
-            cv2.imwrite(os.path.join(path, filenames[idx]), images[idx])
+            _imwrite_checked(os.path.join(path, filenames[idx]), images[idx])
 
         if size >= MIN_CLUSTER_SIZE:
             accepted_paths[label] = path
             accepted_centroids[label] = np.mean(features[indices], axis=0)
 
+    #Nearest-accepted-centroid assignment for every high-variance character. Was one
+    #np.linalg.norm() python-level call per (character, accepted cluster) pair - for H
+    #high-variance characters and K accepted clusters that's H*K individual numpy calls, each
+    #paying Python/numpy dispatch overhead for a handful of FLOPs. Computed here instead as one
+    #(H, K) squared-distance matrix via the ||a-b||^2 = ||a||^2 + ||b||^2 - 2*a.b expansion, so the
+    #dominant a.b term is a single BLAS matrix multiply - avoids materializing an (H, K, D) tensor
+    #while still giving the same nearest-centroid result (squared distance preserves the argmin).
+    if accepted_centroids:
+        acc_labels = list(accepted_centroids.keys())  #dict insertion order, matches min()'s tie-breaking below
+        centroid_matrix = np.stack([accepted_centroids[acc_label] for acc_label in acc_labels])
+
     for label in high_var_labels:
         indices = np.where(labels == label)[0]
-        for idx in indices:
-            if accepted_centroids:
-                best_label = min(
-                    accepted_centroids,
-                    key=lambda acc_label: np.linalg.norm(features[idx] - accepted_centroids[acc_label])
-                )
-                path = accepted_paths[best_label]
-            else:
-                #No accepted cluster exists to merge into: keep its own cluster folder
-                #so the character still ends up under Accepted.
-                path = os.path.join(MERGED_FOLDER, "Accepted", f"Cluster_{label}_Size{len(indices)}")
+        if accepted_centroids:
+            char_feats = features[indices]
+            sq_dist = (
+                np.sum(char_feats ** 2, axis=1)[:, None]
+                + np.sum(centroid_matrix ** 2, axis=1)[None, :]
+                - 2 * char_feats @ centroid_matrix.T
+            )
+            best_positions = np.argmin(sq_dist, axis=1)  #first minimum on ties, matching the original min()
+            for idx, best_pos in zip(indices, best_positions):
+                path = accepted_paths[acc_labels[best_pos]]
+                os.makedirs(path, exist_ok=True)
+                _imwrite_checked(os.path.join(path, filenames[idx]), images[idx])
+        else:
+            #No accepted cluster exists to merge into: keep its own cluster folder
+            #so the character still ends up under Accepted.
+            path = os.path.join(MERGED_FOLDER, "Accepted", f"Cluster_{label}_Size{len(indices)}")
             os.makedirs(path, exist_ok=True)
-            cv2.imwrite(os.path.join(path, filenames[idx]), images[idx])
+            for idx in indices:
+                _imwrite_checked(os.path.join(path, filenames[idx]), images[idx])
     print(f"Merged classification saved - took {format_duration(time.monotonic() - merged_save_start)}", flush=True)
 
     print(f"Done! Results saved in {RESULTS_FOLDER}", flush=True)

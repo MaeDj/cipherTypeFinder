@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from model.utils.remote_listdir import listdir as remote_listdir
 from model.utils.binarization_method import resolve_binarization_method
 from model.utils.progress import progress
+from model.utils.parallel import parallel_map_unordered
 
 random.seed(0)
 
@@ -37,6 +38,8 @@ def binarize(im,method):
 		bina = binarize_sauvola(im)
 	elif "local" in method:
 		bina = binarize_localMinimumMaximum(im)
+	else:
+		raise ValueError(f"Unknown binarization method '{method}'")
 	return bina
 
 def binarize_otsu(im):
@@ -130,7 +133,13 @@ def numnb(bi, fns):
 
 def rescale(r,maxvalue=255):
 	mi = r.min()
-	return maxvalue*(r-mi)/(r.max()-mi)
+	span = r.max() - mi
+	#A perfectly uniform input (e.g. a blank crop) makes span 0, which would otherwise divide by
+	#zero and silently cast inf/NaN into uint8 further down instead of raising or producing a
+	#sane result. There's nothing to rescale in that case - the whole image is already one value.
+	if span == 0:
+		return np.zeros_like(r)
+	return maxvalue*(r-mi)/span
 
 def start_binarization(method, input_path, output_path):
 	for filename in natsorted(remote_listdir(input_path), key = lambda x: x.lower()):
@@ -139,20 +148,36 @@ def start_binarization(method, input_path, output_path):
 		cv2.imwrite(os.path.join(output_path,filename),bina)
 
 
-
-os.makedirs(output_folder, exist_ok=True)
-
-images_list = remote_listdir(input_folder)
-print(f"[binarize:{METHOD}] {len(images_list)} images to process", flush=True)
-
-for image in progress(images_list, label=f"binarize:{METHOD}"):
+def _process_one(image):
+    """Binarize a single image. Runs in a worker process - relies only on module-level globals
+    (input_folder/output_folder/METHOD) already set before the pool starts, which the default
+    fork start method on Linux hands to every worker for free."""
     image_path = os.path.join(input_folder, image)
 
     #Load image in grayscale
     gray_image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    if gray_image is None:
+        #A single unreadable/corrupt file must not abort an otherwise multi-hour run over
+        #hundreds of thousands of images with no output to show for it.
+        print(f"Warning: Could not read {image_path}, skipping", flush=True)
+        return False
 
     binary_image = binarize(gray_image, METHOD)
 
     #Save or display the binarized image
     cv2.imwrite(f'{output_folder}/{image}', binary_image)
+    return True
+
+
+if __name__ == "__main__":
+    os.makedirs(output_folder, exist_ok=True)
+
+    images_list = remote_listdir(input_folder)
+    print(f"[binarize:{METHOD}] {len(images_list)} images to process", flush=True)
+
+    #Every image is binarized independently of every other one, so this fans out across a
+    #process pool instead of one core handling the whole corpus alone (see model/utils/parallel.py).
+    for _image, _ok in progress(parallel_map_unordered(_process_one, images_list),
+                                 total=len(images_list), label=f"binarize:{METHOD}"):
+        pass
 

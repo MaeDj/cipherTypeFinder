@@ -39,32 +39,35 @@ def doc_id():
 
 
 #Link each character to his document and provide linked cluster information on position into the document
+#Was O(docs x clusters x chars_per_cluster): every document re-listed and re-scanned every cluster
+#folder from scratch (413 documents x re-reading every one of potentially tens of thousands of
+#character files each, via remote_listdir every single time). Each cluster folder only needs to be
+#listed once total - every character file already carries its own doc id in its name
+#(`symbol_<doc>_<counter>`), so a single pass buckets every character into its document's entry
+#directly instead of re-scanning the whole corpus once per document.
 def organizing_char_list(docId_list):
-    dict_doc_charList=dict()
-    for doc in docId_list:
-        dict_char_info = dict()
-        for cluster in remote_listdir(os.path.join(INPUT_DIRECTORY,'Accepted')):
-            cluster_match = re.match(r'^Cluster_(.+)_Size(\d+)$', cluster)
-            if cluster_match:
-                cluster_label = cluster_match.group(1)
-            else:
-                cluster_label = 'Unknown'
-                print("Verify cluster folder name")
+    dict_doc_charList = {doc: dict() for doc in docId_list}
+    doc_id_set = set(docId_list)
+
+    accepted_dir = os.path.join(INPUT_DIRECTORY, 'Accepted')
+    for cluster in remote_listdir(accepted_dir):
+        cluster_match = re.match(r'^Cluster_(.+)_Size(\d+)$', cluster)
+        if not cluster_match:
+            print("Verify cluster folder name")
+            continue
+        cluster_label = cluster_match.group(1)
+
+        cluster_path = os.path.join(accepted_dir, cluster)
+        for char in remote_listdir(cluster_path):
+            match = re.match(r'^symbol_(.+)_(\d+)\.(jpg|jpeg|png)$', char)
+            if not match:
+                print("Verify file name")
                 continue
-            cluster_path = os.path.join(INPUT_DIRECTORY,'Accepted',cluster)
-            for char in remote_listdir(cluster_path):
-                match = re.match(r'^symbol_(.+)_(\d+)\.(jpg|jpeg|png)$', char)
-                if match:
-                    filename, global_counter = match.group(1), int(match.group(2))
-                    if filename==doc:
-                        dict_char_info[global_counter]={'cluster':cluster_label,'img_name':char}
+            filename, global_counter = match.group(1), int(match.group(2))
+            if filename in doc_id_set:
+                dict_doc_charList[filename][global_counter] = {'cluster': cluster_label, 'img_name': char}
 
-                else:
-                    print("Verify file name")
-                    continue
-        dict_doc_charList[doc]=dict_char_info
-
-    return(dict_doc_charList)
+    return dict_doc_charList
 
 
 
