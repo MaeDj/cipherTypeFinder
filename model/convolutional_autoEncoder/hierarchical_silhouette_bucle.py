@@ -3,7 +3,6 @@ import sys
 import json
 import time
 import numpy as np
-import cv2
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -13,7 +12,6 @@ from scipy.cluster.hierarchy import dendrogram, linkage
 import matplotlib.pyplot as plt
 from pathlib import Path
 import shutil
-from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import normalize
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -30,6 +28,14 @@ LATENT_DIM = 64   #Size of the feature vector
 LEARNING_RATE = 1e-3
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 USE_CUDA = DEVICE.type == "cuda"
+
+#AgglomerativeClustering(ward).fit_predict and silhouette_score are both O(n^2) in the number of
+#characters. Fine at a few thousand, but at the hundreds-of-thousands scale this pipeline now runs
+#at, doing that twice per candidate threshold (16 candidates below) dwarfs every other stage
+#combined. The search only has to pick *which* threshold looks best - a representative sample
+#gives the same answer without the O(n^2) blowup. The final clustering after the search still
+#runs on every character (that assignment is what actually gets saved to disk).
+THRESHOLD_SEARCH_SAMPLE_SIZE = 8000
 
 DATA_PATH = f"{DATASET_PATH}/preprocessing/processed/preprocessed_data.npy"
 #Filenames now live next to the array as plain JSON rather than pickled together with
@@ -81,9 +87,53 @@ def _imwrite_checked(path, img):
     format - which would otherwise let a full disk quietly produce a truncated cluster output while
     the pipeline still reports "Done!". This stage writes every character crop up to twice over
     (once under Original/, once under Merged/), so it's exactly the kind of place a quota limit
-    gets hit; turn that into a loud, immediate failure instead of a silent one."""
+    gets hit; turn that into a loud, immediate failure instead of a silent one.
+
+    cv2 is imported here rather than at module level so the rest of this module (model
+    definition, GPU silhouette, training loop) stays importable - e.g. for benchmark_gpu.py -
+    on any machine that has torch but not opencv."""
+    import cv2
     if not cv2.imwrite(path, img):
         raise OSError(f"Failed to write image to {path} (disk full? invalid path?)")
+
+
+def silhouette_score_gpu(features, labels, device=DEVICE):
+    """Same definition as sklearn.metrics.silhouette_score (mean euclidean-distance silhouette,
+    singleton clusters score 0), but vectorized on `device` instead of sklearn's single-threaded
+    CPU implementation. The threshold search below calls this once per candidate every run, and
+    the autoencoder already put a GPU in play for this pipeline - reusing it here (via a single
+    (n, n) torch.cdist instead of sklearn's chunked CPU pairwise-distance loop) is effectively free
+    at the sample sizes THRESHOLD_SEARCH_SAMPLE_SIZE keeps this to.
+    """
+    x = torch.as_tensor(features, dtype=torch.float32, device=device)
+    labels_t = torch.as_tensor(labels, dtype=torch.int64, device=device)
+    n = x.shape[0]
+    idx = torch.arange(n, device=device)
+
+    unique_labels = torch.unique(labels_t)
+    own_cluster = torch.searchsorted(unique_labels, labels_t)  #labels_t re-indexed to 0..k-1
+
+    dist = torch.cdist(x, x)  #(n, n) pairwise euclidean distances
+
+    #One-hot cluster membership turns "sum of distances from each point to each cluster" into a
+    #single (n, n) @ (n, k) matmul instead of a Python-level loop per cluster.
+    one_hot = torch.zeros(n, unique_labels.numel(), device=device)
+    one_hot[idx, own_cluster] = 1.0
+    cluster_sizes = one_hot.sum(dim=0)  #(k,)
+    dist_to_clusters = dist @ one_hot   #(n, k)
+
+    own_size = cluster_sizes[own_cluster]
+    #a(i): mean distance to own cluster, excluding the point itself
+    a = dist_to_clusters[idx, own_cluster] / (own_size - 1).clamp(min=1)
+
+    #b(i): mean distance to the nearest *other* cluster
+    mean_dist_to_clusters = dist_to_clusters / cluster_sizes.clamp(min=1)
+    mean_dist_to_clusters[idx, own_cluster] = float("inf")
+    b = mean_dist_to_clusters.min(dim=1).values
+
+    s = (b - a) / torch.maximum(a, b)
+    s = torch.where(own_size <= 1, torch.zeros_like(s), s)  #sklearn convention: singleton -> 0
+    return s.mean().item()
 
 
 def main():
@@ -188,13 +238,18 @@ def main():
           flush=True)
 
     #FIND OPTIMAL THRESHOLD
-    #This is the pipeline's main risk area: silhouette_score is O(n^2) in len(features) and it
-    #runs once per tested threshold below - fine at a few tens of thousands of characters, slow
-    #(and memory-heavy) well beyond that. Per-threshold timing makes that cost visible live
-    #instead of the run just appearing to hang.
+    #Search on a fixed-seed subsample (see THRESHOLD_SEARCH_SAMPLE_SIZE above) - both fit_predict
+    #and the silhouette score below only need to rank thresholds against each other, not run on
+    #every character. GPU silhouette per candidate keeps the O(n^2) part of even that sample on
+    #the same device as the autoencoder instead of a single CPU core.
     test_thresholds = np.linspace(0.5, 2, 16)
+    if len(features) > THRESHOLD_SEARCH_SAMPLE_SIZE:
+        sample_idx = np.random.default_rng(42).choice(len(features), size=THRESHOLD_SEARCH_SAMPLE_SIZE, replace=False)
+        search_features = features[sample_idx]
+    else:
+        search_features = features
     print(f"\nSearching for optimal distance threshold over {len(test_thresholds)} candidates "
-          f"({len(features)} characters)...", flush=True)
+          f"(sample of {len(search_features)} of {len(features)} characters, on {DEVICE})...", flush=True)
     best_score = -1
     best_threshold = float(test_thresholds[len(test_thresholds) // 2])
 
@@ -203,12 +258,12 @@ def main():
     for i, t in enumerate(test_thresholds, 1):
         t_start = time.monotonic()
         cluster_test = AgglomerativeClustering(n_clusters=None, distance_threshold=t, linkage='ward')
-        labels_test = cluster_test.fit_predict(features)
+        labels_test = cluster_test.fit_predict(search_features)
 
         n_found = len(set(labels_test))
         #Silhouette requires between 2 and N-1 clusters
-        if 1 < n_found < len(features):
-            score = silhouette_score(features, labels_test)
+        if 1 < n_found < len(search_features):
+            score = silhouette_score_gpu(search_features, labels_test)
             scores.append(score)
             if score > best_score:
                 best_score = score
