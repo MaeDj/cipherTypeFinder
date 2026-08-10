@@ -27,8 +27,12 @@ def login (base):
         'username': os.getenv('DECODE_RECORD_LOGIN'),
         'password': os.getenv('DECODE_RECORD_PASSWORD')
     })
-    #print(login_resp.status_code, login_resp.text)  # inspect before assuming JSON
+    #A failed login (bad creds, downtime, rate limit) must not silently turn into a garbage
+    #bearer token - that only surfaces later as confusing KeyErrors deep in the callers below.
+    login_resp.raise_for_status()
     login=login_resp.text
+    if not login.startswith('{"JWT":"') or not login.endswith('"}'):
+        raise RuntimeError(f"Unexpected login response, not a JWT payload: {login[:200]!r}")
     login_clear = login.replace('{"JWT":"', '') #Text processing to only keep the core code
     login_clear = login_clear.replace('"}', '')
 
@@ -43,13 +47,21 @@ def get_cipher(base):
 
      #adjust thhe wanted number of pages
     for index in range(1,200):
-        #re-login for each page since the token only lasts 10 min
-        headers=login(base)
-        record=requests.get(f'{base}/api/list/records?page={index}&record_type=1', headers=headers)
-        record_doc=record.json()
-        for rec in record_doc['records']:
-            if rec['id'] not in id_rec:
-                id_rec.append(rec['id'])
+        #A single bad page (transient network error, malformed response) must not discard every
+        #id_rec already collected from the pages before it - log and move on to the next page
+        #instead of letting the whole fetch crash here.
+        try:
+            #re-login for each page since the token only lasts 10 min
+            headers=login(base)
+            record=requests.get(f'{base}/api/list/records?page={index}&record_type=1', headers=headers)
+            record.raise_for_status()
+            record_doc=record.json()
+            for rec in record_doc['records']:
+                if rec['id'] not in id_rec:
+                    id_rec.append(rec['id'])
+        except (requests.RequestException, ValueError, KeyError) as e:
+            print(f"Warning: could not fetch page {index}, skipping ({e})")
+            continue
     return(id_rec)
 #print(id_rec)
 
@@ -60,19 +72,24 @@ def get_image_metadata(base,id_rec):
         headers=login(base)
         view=requests.get(f'{base}/api/view/records/{id}', headers=headers)
         try:
+            view.raise_for_status()
             view_doc=view.json()
             if (view_doc['records']['origin_region'] is not None or view_doc['records']['origin_city'] is not None) and view_doc['records']['start_year'] is not None and (view_doc['records']['cipher_types'] is not None and view_doc['records']['cipher_types'] != '') and '6' not in [c.strip() for c in view_doc['records']['cipher_types'].split(',')] and is_allowed_plaintext_lang(view_doc['records'].get('plaintext_lang')):
                 image = requests.get(f'{base}/api/view/images/{id}', headers=headers)
+                image.raise_for_status()
                 images_doc = image.json()
                 view_rec.append({id:{'origin_region':view_doc['records']['origin_region'], 'origin_city':view_doc['records']['origin_city'], 'start_year':view_doc['records']['start_year'], 'cipher_types':view_doc['records']['cipher_types'],'plaintext_lang':view_doc['records']['plaintext_lang'],'symbol_sets':view_doc['records']['symbol_sets'],'url':images_doc['images']['path']['url'], 'image_type':images_doc['images']['path']['type']}})
-        except:
-            print(f"Unusable image in records {id}")
+        #Narrowed from a bare `except:` - that swallowed KeyboardInterrupt/SystemExit along with the
+        #actual expected failure modes (missing keys, bad JSON, network errors), and gave no clue
+        #which of those it was.
+        except (requests.RequestException, ValueError, KeyError) as e:
+            print(f"Unusable image in records {id} ({e})")
 
     print(view_rec)
     print(len(view_rec))
     return(view_rec)
 
-#WARNING, There is in total 2000 pages
+#WARNING, There is in total 200 pages
 #WARNING: Authorization stands for 10 min
 
 def image_extension(image_type):
