@@ -9,7 +9,7 @@ The aim of this program is to get from a raw photo of a (supposedly) ciphered ma
 
 | # | Step | Status |
 |---|------|--------|
-| 0 | Manuscript detection (CNN) | 🚧 Architecture defined (`model/manuscript_detection/CNN.py`), corpus not yet built |
+| 0 | Manuscript detection (CNN) | ✅ Implemented (`model/manuscript_detection/manuscript_detection_CNN.py`), runnable from the CLI |
 | 1 | Image & data preprocessing | ✅ Implemented (`model/preprocessing`) |
 | 2 | Character clustering (convolutional autoencoder) | ✅ Implemented (`model/convolutional_autoEncoder`) |
 | 3 | Computable text reconstruction | ✅ Implemented (`model/txt_equivalent_builder`) |
@@ -41,7 +41,9 @@ The aim of this program is to get from a raw photo of a (supposedly) ciphered ma
 
 - **Process-pool parallelism across files** (`model/utils/parallel.py`). `binarize.py`, `line_segmentation.py`, `cleaning.py`, `connected_component.py` and the read/resize step of `processing_for_clustering.py` each process hundreds to hundreds of thousands of files that are fully independent of one another; all five now fan out across a process pool (`os.cpu_count() - 1` workers by default) instead of one core handling the whole corpus sequentially, which is the main lever on a many-core server. Workers pin OpenCV to a single internal thread each (`cv2.setNumThreads(1)`) to avoid oversubscribing cores between process-level and cv2's own thread-level parallelism.(AI generated optimization process)
 
-- **GPU-bound character clustering, an O(n²) threshold-search fix, and a benchmarking tool** (`hierarchical_silhouette_bucle.py`, `model/utils/benchmark_gpu.py`). The autoencoder already trains on `DEVICE = cuda if available else cpu`. The threshold search that follows it, though, called `AgglomerativeClustering(ward).fit_predict` and `silhouette_score` — both O(n²) — once per candidate threshold (16 candidates) over the *entire* character set; at hundreds of thousands of characters that dwarfed every other stage combined, and `silhouette_score` is sklearn/CPU-only regardless of what GPU is available. Two fixes: (1) the search now runs against a fixed-seed, `THRESHOLD_SEARCH_SAMPLE_SIZE`-sized (8,000) subsample instead of the full corpus — same threshold gets picked, several thousand times less pairwise work per candidate; the *final* clustering, the one whose labels actually get saved to disk, still runs on every character, since that assignment can't be approximated away. (2) `silhouette_score` was replaced with `silhouette_score_gpu`, a hand-written equivalent that does the O(n²) pairwise-distance work as a single `torch.cdist` on `DEVICE` instead of sklearn's chunked CPU loop — verified to match sklearn's output (30 random cases plus a singleton-cluster edge case, float32 precision) before being wired in. `model/utils/benchmark_gpu.py` (`python -m model.utils.benchmark_gpu`) times both remaining costs on the real machine instead of estimating from FLOP counts: real autoencoder batches on `DEVICE`, scaled to `EPOCHS × character_count`, and a quadratic-fit extrapolation of the one full-corpus `AgglomerativeClustering` fit from a few small timed sample sizes, rather than running it once at full size just to see how long it takes. Ward-linkage agglomerative clustering itself still has no GPU implementation in this project's dependency stack (that would mean adding RAPIDS cuML, a new heavy dependency not currently pulled in) — that one fit stays CPU-bound regardless of hardware. (AI generated optimization process)
+- **GPU-bound character clustering, an O(n²) threshold-search fix, and a benchmarking tool** (`hierarchical_silhouette_bucle.py`, `model/utils/benchmark_gpu.py`). The autoencoder already trains on `DEVICE = cuda if available else cpu`. The threshold search that follows it, though, called `AgglomerativeClustering(ward).fit_predict` and `silhouette_score` — both O(n²) — once per candidate threshold (16 candidates) over the *entire* character set; at hundreds of thousands of characters that dwarfed every other stage combined, and `silhouette_score` is sklearn/CPU-only regardless of what GPU is available. Two fixes: (1) the search now runs against a fixed-seed, `THRESHOLD_SEARCH_SAMPLE_SIZE`-sized (8,000) subsample instead of the full corpus — same threshold gets picked, several thousand times less pairwise work per candidate. (2) `silhouette_score` was replaced with `silhouette_score_gpu`, a hand-written equivalent that does the O(n²) pairwise-distance work as a single `torch.cdist` on `DEVICE` instead of sklearn's chunked CPU loop — verified to match sklearn's output (30 random cases plus a singleton-cluster edge case, float32 precision) before being wired in. `model/utils/benchmark_gpu.py` (`python -m model.utils.benchmark_gpu`) times both remaining costs on the real machine instead of estimating from FLOP counts: real autoencoder batches on `DEVICE`, scaled to `EPOCHS × character_count`, and a quadratic-fit extrapolation of the one full-corpus `AgglomerativeClustering` fit from a few small timed sample sizes, rather than running it once at full size just to see how long it takes. Ward-linkage agglomerative clustering itself still has no GPU implementation in this project's dependency stack (that would mean adding RAPIDS cuML, a new heavy dependency not currently pulled in) — that one fit stays CPU-bound regardless of hardware. (AI generated optimization process)
+
+- **Final-clustering memory fix** (`hierarchical_silhouette_bucle.py`). The threshold-search sampling above doesn't apply to the *final* clustering fit — the one whose labels actually get saved to disk — since every character has to be assigned, not just a representative subsample. Left as plain `AgglomerativeClustering(linkage='ward')` on the full corpus, this still allocates the full condensed pairwise-distance matrix (`n(n-1)/2` float64s); at the corpus's real scale (~433K characters) that's a ~700 GiB allocation, which crashed the run with `numpy._core._exceptions._ArrayMemoryError`. Fixed by constraining the final fit to a k-nearest-neighbor `connectivity` graph (`sklearn.neighbors.kneighbors_graph`, `FINAL_CLUSTERING_N_NEIGHBORS = 30`) instead of the dense all-pairs matrix — bounds memory to O(n·k), while still producing a ward-linkage dendrogram cut at the same `distance_threshold` picked by the search. (AI generated optimization process)
 
 ---
 
@@ -64,11 +66,40 @@ Origin, date and plaintext language are no longer hardcoded gaps, they are now u
 
 ## 0. Manuscript Detection (`model/manuscript_detection`)
 
-This is the **gatekeeper of the whole pipeline**: before any preprocessing, clustering, or cipher-type analysis happens, a binary CNN (`manuscript_detection_CNN.py`) decides whether a raw input image actually looks like a manuscript at all. Any image a user submits that is **not** manuscript-like is rejected here and never reaches the rest of the pipeline — it does not get routed into the "Not encrypted / not a manuscript" cipher-type class from step 5, which only applies to manuscripts that passed this gate but turned out to be unciphered/unreadable.
+This is the **gatekeeper of the whole pipeline**: before any preprocessing, clustering, or cipher-type analysis happens, a CNN (`manuscript_detection_CNN.py`) decides whether a raw input image actually looks like a manuscript at all. Any image a user submits that is **not** manuscript-like is rejected here and never reaches the rest of the pipeline — it does not get routed into the "Not encrypted / not a manuscript" cipher-type class from step 5, which only applies to manuscripts that passed this gate but turned out to be unciphered/unreadable.
 
-1. **Dataset loading** (`load_custom_dataset`) — reads a corpus of manuscript vs. random images (`<DATASET_PATH>/corpus_manuscript_random/{images,labels}`, not yet built — see [Running the Pipeline & Server Notes](#running-the-pipeline--server-notes) for what `DATASET_PATH` resolves to), resizing every image to the same fixed 100×100 canvas used by the rest of the project (see `model/preprocessing/processing_for_clustering.py`), and split 80/20 into train/test with `train_test_split`.
-2. **Architecture** — a small stack of `Conv2D` + `MaxPooling2D` + `Dropout` blocks (32 → 64 → 64 → 128 filters) followed by a `Flatten` → `Dense(64, relu)` → `Dropout` → `Dense(1, sigmoid)` output, trained with binary cross-entropy / Adam.
-3. **Output** — a single probability that the input image is a manuscript; images falling below the decision threshold are rejected before entering the preprocessing stage below. Rejected images are logged to `rejected_documents.csv` (`log_rejected_document`) with their probability for later review, while validated images are copied into the `validated_documents/` folder (`save_validated_document`) via `cv2.imwrite`.
+1. **Dataset loading** (`load_custom_dataset`) — reads the `manuscripts_non_chiffres` corpus (`<DATASET_PATH>/manuscripts_non_chiffres`, see [Running the Pipeline & Server Notes](#running-the-pipeline--server-notes) for what `DATASET_PATH` resolves to), organized as one subfolder per target cluster:
+   - **`M`** — Manuscript
+   - **`NM`** — Non-Manuscript
+   - **`U`** — Unrelated
+
+   Each cluster folder holds an `img/` subfolder (the pictures, `<cluster>_<x>.jpg`/`.png`) and a `metadata/` subfolder (one `<cluster>_<x>.json` per picture, `{"document_type": "M"|"NM"|"U"}`). Every image is resized to the same fixed 100×100 canvas used by the rest of the project (see `model/preprocessing/processing_for_clustering.py`), labeled from its metadata's `document_type` (turned into the index of `CLUSTER_LABELS = ('M', 'NM', 'U')`, so the class order stays stable across training runs), and the combined M+NM+U set is split 80/20 into train/test with `train_test_split` (stratified, so all three clusters stay represented in both splits).
+
+   **NM patch augmentation** — NM is under-represented next to M/U on the reference corpus (46 vs. ~100 images). Rather than leaving that imbalance in, `load_custom_dataset` adds one extra sample per NM image: a random square crop of the full-resolution source covering `PATCH_SCALE` (70%) of its shorter side (`extract_patch`), resized back to the 100×100 canvas and kept under the same label. This doubles NM's sample count without needing new data. Which clusters get patched is configurable via `PATCH_CLUSTERS` (currently `('NM',)` only); patch placement is seeded (`PATCH_SEED`) so it's reproducible across runs, same as `train_test_split`'s `random_state`.
+
+2. **Architecture** (`build_model`) — a small stack of `Conv2D` + `MaxPooling2D` + `Dropout` blocks (32 → 64 → 64 → 128 filters) followed by `Flatten` → `Dense(64, relu)` → `Dropout` → `Dense(len(CLUSTER_LABELS), softmax)` — one output unit per cluster, since a document belongs to exactly one of M/NM/U. Trained with `sparse_categorical_crossentropy` (labels are plain class indices, not one-hot vectors) / Adam.
+3. **Training** (`main`) — loads the dataset, trains the model, reports held-out accuracy, and persists the trained model to `MODEL_PATH` (`<DATASET_PATH>/models/manuscript_detection_cnn.keras`) so later calls don't need to retrain from scratch.
+4. **Gating a single document** (`predict_manuscript(model, image_path, threshold=0.5)`) — classifies one image into M/NM/U and only accepts it if the predicted cluster is `M` **and** its probability clears `threshold`; everything else is rejected. Rejected images are logged to `rejected_documents.csv` (`log_rejected_document`) with the predicted cluster and probability for later review, while accepted images are copied into the `validated_documents/` folder (`save_validated_document`) via `cv2.imwrite`.
+5. **CLI** — the script can be run directly from the project root:
+
+   ```bash
+   # No saved model yet: trains (and saves it to MODEL_PATH), then classifies
+   python -m model.manuscript_detection.manuscript_detection_CNN path/to/image.jpg
+
+   # Classify several images at once
+   python -m model.manuscript_detection.manuscript_detection_CNN img1.jpg img2.png
+
+   # Force retraining even if a saved model already exists
+   python -m model.manuscript_detection.manuscript_detection_CNN --retrain path/to/image.jpg
+
+   # Custom acceptance threshold (default 0.5)
+   python -m model.manuscript_detection.manuscript_detection_CNN --threshold 0.7 path/to/image.jpg
+
+   # No image given: just (re)trains and exits
+   python -m model.manuscript_detection.manuscript_detection_CNN
+   ```
+
+   Each classified image prints `path: ACCEPTED (manuscript)` or `path: REJECTED`. `-m model.manuscript_detection.manuscript_detection_CNN` (rather than the raw file path) is required so the module's own `model.utils` imports resolve correctly, same as every other script in this repo expects to be run as part of the `model` package.
 
 ---
 
@@ -98,7 +129,7 @@ Implements the character-clustering approach described in *"Unsupervised Feature
 2. Trains a convolutional autoencoder (3-layer convolutional encoder down to a 64-dimensional latent vector, mirrored transposed-convolutional decoder) to reconstruct each character image (MSE loss, Adam optimizer).
 3. Extracts and L2-normalizes the latent vector of every character from the trained encoder — this is the character's feature representation.
 4. Searches for the optimal distance threshold for Agglomerative (ward-linkage) clustering by scanning a range of thresholds against a fixed-size subsample and keeping the one maximizing a GPU-computed silhouette score (see [Running the Pipeline & Server Notes](#running-the-pipeline--server-notes) for why, and for a benchmarking tool that times this stage on the target hardware).
-5. Runs the final hierarchical clustering with that threshold, then classifies each resulting cluster by size (<5 members = too small) and by average intra-cluster distance (top 20% = too high-variance), and saves the outcome under two parallel folders for comparison:
+5. Runs the final hierarchical clustering with that threshold over every character, restricted to a k-nearest-neighbor connectivity graph rather than the full pairwise-distance matrix so it stays feasible at full corpus scale (see [Running the Pipeline & Server Notes](#running-the-pipeline--server-notes)), then classifies each resulting cluster by size (<5 members = too small) and by average intra-cluster distance (top 20% = too high-variance), and saves the outcome under two parallel folders for comparison:
    - **`Original/`** — the straightforward classification: too-small and too-high-variance clusters are set aside as "Rejected" (`Rejected_TooSmall`, `Rejected_HighVar`), while the rest are kept as "Accepted" clusters, each ideally corresponding to a single distinct character/glyph.
    - **`Merged/`** — a lossless variant where no character is discarded: too-small clusters are kept as their own accepted cluster, and every character from a too-high-variance cluster is individually reassigned to whichever accepted cluster's centroid is closest, so all characters end up under a single `Accepted` folder. (Necessary to build equivalent alphabet)
 
@@ -157,6 +188,27 @@ A first baseline is implemented and runnable end-to-end: a multi-label `MLPClass
 
 - **Model**: `StandardScaler` → `MLPClassifier(hidden_layer_sizes=(64, 32), activation='relu', solver='adam', early_stopping=True)`. Since the target is a 2D binary matrix rather than a single label column, scikit-learn puts one sigmoid unit per class on the output layer instead of a single softmax, natively supporting multi-label prediction and per-class probabilities (`predict_proba`).
 - **Evaluation**: per-class `classification_report`, exact-match accuracy, Hamming loss, and samples-averaged Jaccard score — plain accuracy is misleading for multi-label problems, so these are reported instead.
+- **Persistence** (`main`) — the trained model, `label_names` and every fitted encoder (`numeric_medians`, `origin_encoder`, `symbol_set_binarizer`, ...) are bundled together and saved with `joblib` to `MODEL_PATH` (`<DATASET_PATH>/models/mlp_cipher_classifier.joblib`) once training/evaluation finishes — all three travel together since `build_feature_row`/`predict_cipher_types` need the encoders and label names alongside the model itself to encode and interpret a new document the same way.
+- **CLI** — the script can be run directly from the project root to predict one or more already-computed documents (looked up by `doc_id` in `manuscripts_stats.csv`, step 4's output) without retraining:
+
+  ```bash
+  # No saved model yet: trains (and saves it to MODEL_PATH), then predicts
+  python -m model.text_clusterization.MLP_cipher_classifier doc123
+
+  # Predict several documents at once, reusing the saved model
+  python -m model.text_clusterization.MLP_cipher_classifier doc123 doc456
+
+  # Force retraining even if a saved model already exists
+  python -m model.text_clusterization.MLP_cipher_classifier --retrain doc123
+
+  # Custom per-class probability threshold (default 0.5)
+  python -m model.text_clusterization.MLP_cipher_classifier --threshold 0.3 doc123
+
+  # No doc_id given: just (re)trains and exits
+  python -m model.text_clusterization.MLP_cipher_classifier
+  ```
+
+  `load_document_stats(doc_id)` looks the document up in `INPUT_CSV` and reshapes its row into the `(stats, origin, symbol_sets)` triple `build_feature_row` expects, so the CLI path reuses the exact same encoding as training rather than a separate code path. Each prediction prints `doc_id: label1, label2, ...` (or `(none above threshold)`).
 
 ### 5.2 Target Architecture: Image + Tabular Fusion (planned, not yet implemented)
 
@@ -234,7 +286,7 @@ Please find below the list of tasks performed using AI:
 - Code verification (path and call unicity / compilation checks) and optimization (Complexity reduction)
 - Server-specific issues (see Running the Pipeline & Server Notes)
 - Automation of repetitive implementation fixes (replacing incorrect structures / incorrect path calls)
-- Error-handling audit and hardening across the preprocessing pipeline and data-fetching script (unreadable-file skips, disk-quota-safe writes, narrowed/validated exception handling) — see Running the Pipeline & Server Notes
-- Connected-component extraction sped up by replacing a hand-rolled Python flood fill with OpenCV's built-in implementation
 - Character-clustering threshold search rewritten to subsample (fixing an O(n²) bottleneck) and to score candidates with a GPU-accelerated silhouette function instead of sklearn's CPU-only one, verified against sklearn's output before being wired in; added `model/utils/benchmark_gpu.py` to measure real autoencoder/clustering timings on the target hardware instead of estimating from FLOP counts
+- Diagnosed and fixed a `numpy._core._exceptions._ArrayMemoryError` (~700 GiB allocation) in the final character-clustering fit: unconstrained ward linkage on the full ~433K-character corpus needed the full dense pairwise-distance matrix, fixed by constraining the fit to a k-nearest-neighbor connectivity graph instead (O(n·k) memory) — see `hierarchical_silhouette_bucle.py` and Running the Pipeline & Server Notes
+- CLI implementation 
 - Organization and standardization of the documentation (based on human instructions, structure, and reasoning)

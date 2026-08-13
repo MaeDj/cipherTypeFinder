@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.cluster import AgglomerativeClustering
+from sklearn.neighbors import kneighbors_graph
 from scipy.cluster.hierarchy import dendrogram, linkage
 import matplotlib.pyplot as plt
 from pathlib import Path
@@ -36,6 +37,15 @@ USE_CUDA = DEVICE.type == "cuda"
 #gives the same answer without the O(n^2) blowup. The final clustering after the search still
 #runs on every character (that assignment is what actually gets saved to disk).
 THRESHOLD_SEARCH_SAMPLE_SIZE = 8000
+
+#The FINAL clustering below (the one whose labels actually get saved to disk) still has to run on
+#every character, so sampling isn't an option there. Unconstrained ward linkage needs the full
+#condensed pairwise-distance vector (n*(n-1)/2 float64s) in memory - at hundreds of thousands of
+#characters that's hundreds of GB and reliably OOMs. Restricting merges to each point's k nearest
+#neighbors (via sklearn's connectivity graph support) bounds that to O(n*k) instead, at the cost of
+#only considering local merges - negligible for ward on a latent space this dense with THRESHOLD
+#candidates already spanning 0.5-2.
+FINAL_CLUSTERING_N_NEIGHBORS = 30
 
 DATA_PATH = f"{DATASET_PATH}/preprocessing/processed/preprocessed_data.npy"
 #Filenames now live next to the array as plain JSON rather than pickled together with
@@ -291,11 +301,21 @@ def main():
     plt.close()
 
     #FINAL CLUSTERING
+    #Unlike the threshold search above, this has to run on every character - so it can't fall back
+    #to sampling. Plain ward linkage needs the full (n, n) pairwise-distance matrix, which is the
+    #700GB+ allocation that OOMs at this dataset's scale (see FINAL_CLUSTERING_N_NEIGHBORS above).
+    #A k-nearest-neighbor connectivity graph keeps merges local and memory at O(n*k).
     final_start = time.monotonic()
+    n_neighbors = min(FINAL_CLUSTERING_N_NEIGHBORS, len(features) - 1)
+    print(f"\nBuilding {n_neighbors}-nearest-neighbor connectivity graph for the full-dataset "
+          f"clustering ({len(features)} characters)...", flush=True)
+    connectivity = kneighbors_graph(features, n_neighbors=n_neighbors, include_self=False)
+
     final_clustering = AgglomerativeClustering(
         n_clusters=None,
         distance_threshold=best_threshold,
-        linkage='ward'
+        linkage='ward',
+        connectivity=connectivity
     )
     labels = final_clustering.fit_predict(features)
     n_clusters = len(set(labels))

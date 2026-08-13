@@ -4,6 +4,8 @@
 #Reference: https://scikit-learn.org/stable/modules/neural_networks_supervised.html
 ###
 import os
+import argparse
+import joblib
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
@@ -22,6 +24,10 @@ DATASET_PATH = os.path.expanduser('~/Caramba/Dataset/corpus_cipherTypeFinder_Car
 INPUT_PATH = f'{DATASET_PATH}/computable/statistics'
 INPUT_CSV = f'{INPUT_PATH}/manuscripts_stats.csv'
 
+# Trained model + label names + fitted encoders are persisted here as a single bundle so a later
+# CLI call can predict without retraining (see _load_or_train_model and the __main__ block below)
+MODEL_PATH = f'{DATASET_PATH}/models/mlp_cipher_classifier.joblib'
+
 #cipher_types codes come from ../corpus_builder/fetch_data.py (code 6 is already excluded at fetch time)
 CIPHER_TYPE_LABELS = {
     1: 'monoalphabetic',
@@ -31,6 +37,15 @@ CIPHER_TYPE_LABELS = {
     5: 'nomenclature',
     7: 'polyphonic',
 }
+
+# Numeric statistics columns, as written by ../statistics/equivalent_txt_manuscripts_stats.py
+# (total_symbols, alphabet_size, coincidence_index, start_year, plus one freq_<symbol> per symbol
+# in the corpus). Shared between load_dataset and load_document_stats so both slice the same
+# columns out of the stats csv the same way.
+def numeric_columns_of(df):
+    return [col for col in df.columns
+            if col in ('total_symbols', 'alphabet_size', 'coincidence_index', 'start_year')
+            or col.startswith('freq_')]
 
 
 #Split a comma-separated metadata field (eg cipher_types "1,4" or symbol_sets "1") into a list of
@@ -64,9 +79,7 @@ def load_dataset(csv_path):
     #Not supposed to exist, excluded in fetch_data.py
     df = df[df['cipher_type_codes'].map(len) > 0]
 
-    numeric_columns = [col for col in df.columns
-                        if col in ('total_symbols', 'alphabet_size', 'coincidence_index', 'start_year')
-                        or col.startswith('freq_')] #for each symbol into the whole dataset
+    numeric_columns = numeric_columns_of(df)
     numeric_df = df[numeric_columns].apply(pd.to_numeric, errors='coerce')
     numeric_medians = numeric_df.median()
     numeric_features = numeric_df.fillna(numeric_medians).to_numpy()
@@ -115,6 +128,13 @@ def main():
     print(f"Hamming loss: {hamming_loss(y_test, y_pred):.3f}")
     print(f"Jaccard score (samples): {jaccard_score(y_test, y_pred, average='samples', zero_division=0):.3f}")
 
+    #Persisted as a single bundle (model + label_names + fitted encoders all travel together,
+    #since predict_cipher_types/build_feature_row need all three) so a later CLI call can predict
+    #without retraining (see _load_or_train_model below)
+    os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
+    joblib.dump({'model': model, 'label_names': label_names, 'encoders': encoders}, MODEL_PATH)
+    print(f"Saved trained model to {MODEL_PATH}")
+
     return model, label_names, encoders
 
 
@@ -147,5 +167,61 @@ def predict_cipher_types(model, label_names, feature_row, threshold=0.5):
     return [name for name, probability in zip(label_names, probabilities) if probability >= threshold]
 
 
+###
+#CLI: predict already-computed documents' cipher type(s) without retraining
+###
+
+
+#Look up a single document's row in the stats csv (step 4's output, INPUT_CSV by default) and
+#split it into the (stats, origin, symbol_sets) shape build_feature_row expects - the CLI's way of
+#turning a bare doc_id into a feature row, since only that csv (not a raw image) is what this
+#classifier's features are computed from.
+def load_document_stats(doc_id, csv_path=INPUT_CSV):
+    df = pd.read_csv(csv_path)
+    matches = df[df['doc_id'] == doc_id]
+    if matches.empty:
+        raise ValueError(f"No document '{doc_id}' found in {csv_path}")
+    row = matches.iloc[0]
+
+    stats = {
+        column: (pd.to_numeric(row[column], errors='coerce') if pd.notna(row[column]) else None)
+        for column in numeric_columns_of(df)
+    }
+    origin = row['origin'] if pd.notna(row.get('origin')) else None
+    symbol_sets = row['symbol_sets'] if pd.notna(row.get('symbol_sets')) else None
+
+    return stats, origin, symbol_sets
+
+
+#Load the model bundle saved by main() at MODEL_PATH, training one from scratch (which also saves
+#it) if none exists yet or --retrain was passed
+def _load_or_train_model(retrain=False):
+    if not retrain and os.path.exists(MODEL_PATH):
+        print(f"Loading trained model from {MODEL_PATH}")
+        bundle = joblib.load(MODEL_PATH)
+        return bundle['model'], bundle['label_names'], bundle['encoders']
+    return main()
+
+
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("doc_id", nargs="*",
+                         help="doc_id(s) already present in the stats csv (INPUT_CSV) to predict "
+                              "cipher type(s) for. Omit to just (re)train the model and exit.")
+    parser.add_argument("--retrain", action="store_true",
+                         help="Retrain from INPUT_CSV even if a saved model already exists at "
+                              "MODEL_PATH.")
+    parser.add_argument("--threshold", type=float, default=0.5,
+                         help="Minimum per-class probability to report a cipher type (default 0.5).")
+    args = parser.parse_args()
+
+    #No doc_id given: this call is just meant to (re)train, so always go through main()
+    trained_model, trained_label_names, trained_encoders = _load_or_train_model(
+        retrain=args.retrain or not args.doc_id
+    )
+
+    for doc_id in args.doc_id:
+        doc_stats, doc_origin, doc_symbol_sets = load_document_stats(doc_id)
+        feature_row = build_feature_row(doc_stats, trained_encoders, origin=doc_origin, symbol_sets=doc_symbol_sets)
+        predicted = predict_cipher_types(trained_model, trained_label_names, feature_row, threshold=args.threshold)
+        print(f"{doc_id}: {', '.join(predicted) if predicted else '(none above threshold)'}")
