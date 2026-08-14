@@ -1,7 +1,7 @@
 # CipherTypeFinder
 June 2026
 
-Program created for Caramba Team, Loria.
+Program created for Back-In-Time project, Caramba Team, Loria.
 
 The aim of this program is to get from a raw photo of a (supposedly) ciphered manuscript, its cipher type included into 7 categories.
 
